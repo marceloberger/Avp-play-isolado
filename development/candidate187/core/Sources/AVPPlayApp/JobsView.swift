@@ -1,0 +1,455 @@
+import AppKit
+import AVPPlayCore
+import SwiftUI
+
+/// Aufträge: was läuft, was wartet, was angehalten wurde – und bei jedem der nächste sinnvolle Schritt.
+struct JobsView: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if model.jobs.isEmpty {
+            ContentUnavailableView(L("No Jobs Yet", "Noch keine Aufträge"), systemImage: "list.bullet.clipboard",
+                                   description: Text(L("Pick a game under “Games” and click “Install”.", "Wähle unter „Spiele“ ein Spiel und klicke auf „Installieren“.")))
+                .navigationTitle(L("Jobs", "Aufträge"))
+        } else {
+            HSplitView {
+                List(selection: $model.selectedJob) {
+                    ForEach(model.jobs) { job in
+                        let phase = model.phase(of: job)
+                        JobRow(job: job).tag(job.id)
+                            .contextMenu {
+                                // Dasselbe wie Ziehen, für den, der lieber klickt.
+                                if phase == .queued {
+                                    Button(L("Move Up (Runs Later)", "Nach oben (kommt später dran)")) { model.move(job, sooner: false) }
+                                        .disabled(model.queued.last == job.id)
+                                    Button(L("Move Down (Runs Sooner)", "Nach unten (kommt früher dran)")) { model.move(job, sooner: true) }
+                                        .disabled(model.queued.first == job.id)
+                                    Divider()
+                                }
+                                Button(L("Take Off This List", "Aus dieser Liste nehmen")) { model.remove([job]) }
+                                    .disabled(phase == .running || phase == .queued || phase == .pending)
+                            }
+                            // Ziehen lässt sich nur, was wartet: Was läuft, fertig ist oder angehalten wurde, bleibt stehen.
+                            .moveDisabled(phase != .queued)
+                    }
+                    .onMove { model.moveJobs(from: $0, to: $1) }
+                }
+                .frame(minWidth: 250, idealWidth: 290, maxWidth: 360)
+                Group {
+                    if let job = model.jobs.first(where: { $0.id == model.selectedJob }) {
+                        JobDetail(job: job)
+                    } else {
+                        Text(L("Select a job", "Auftrag auswählen")).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .navigationTitle(L("Jobs", "Aufträge"))
+            .toolbar { ToolbarItem { ClearJobsMenu() } }
+        }
+    }
+}
+
+extension AppModel {
+    /// Der Stand eines Auftrags, wie die Oberfläche ihn nennt. „Läuft“ in der Datei heißt nur dann wirklich
+    /// läuft, wenn dieses Programm ihn gerade ausführt – sonst wurde er unterbrochen.
+    func phase(of job: Job) -> JobPhase {
+        if job.id == runningJob { return .running }
+        if queued.contains(job.id) { return .queued }
+        switch job.state {
+        case .finished: return .finished
+        case .cancelled: return .cancelled
+        case .failed: return .stopped
+        case .running: return .interrupted
+        case .waiting: return .pending
+        }
+    }
+
+    /// Zieht wartende Aufträge in der Liste an eine andere Stelle. Sie tauschen dabei nur untereinander die Plätze;
+    /// alle anderen Zeilen bleiben, wo sie sind. Die neue Reihenfolge steht sofort in den Auftragsdateien.
+    func moveJobs(from source: IndexSet, to destination: Int) {
+        var list = jobs
+        list.move(fromOffsets: source, toOffset: destination)
+        setRunOrder(JobStore.runOrder(of: queued, in: list))
+    }
+
+    /// Rückt einen wartenden Auftrag um einen Platz. Früher dran heißt in der Liste: nach unten.
+    func move(_ job: Job, sooner: Bool) {
+        guard let from = queued.firstIndex(of: job.id) else { return }
+        let to = sooner ? from - 1 : from + 1
+        guard queued.indices.contains(to) else { return }
+        var order = queued
+        order.swapAt(from, to)
+        setRunOrder(order)
+    }
+
+    private func setRunOrder(_ ids: [String]) {
+        do { try paths.jobs.reorder(ids) } catch { notice = "\(error)" }
+        reloadJobs()
+    }
+}
+
+enum JobPhase {
+    case running, queued, pending, finished, cancelled, stopped, interrupted
+
+    var text: String {
+        switch self {
+        case .running: return L("Running", "Läuft")
+        case .queued: return L("Waiting", "Wartet")
+        case .pending: return "Aguardando início manual"
+        case .finished: return L("Finished", "Abgeschlossen")
+        case .cancelled: return L("Cancelled", "Abgebrochen")
+        case .stopped: return L("Stopped", "Angehalten")
+        case .interrupted: return L("Interrupted", "Unterbrochen")
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .running: return "arrow.triangle.2.circlepath"
+        case .queued, .pending: return "clock"
+        case .finished: return "checkmark.circle.fill"
+        case .cancelled: return "xmark.circle"
+        case .stopped: return "exclamationmark.triangle.fill"
+        case .interrupted: return "pause.circle"
+        }
+    }
+    var color: Color {
+        switch self {
+        case .running: return .blue
+        case .finished: return .green
+        case .stopped: return .orange
+        case .queued, .pending, .cancelled, .interrupted: return .secondary
+        }
+    }
+    var canResume: Bool { self == .stopped || self == .interrupted }
+    var canCancel: Bool { self == .running || self == .queued || self == .interrupted || self == .stopped }
+}
+
+struct JobRow: View {
+    @EnvironmentObject var model: AppModel
+    let job: Job
+
+    var body: some View {
+        let phase = model.phase(of: job)
+        HStack(spacing: 10) {
+            Image(systemName: phase.symbol).foregroundStyle(phase.color).frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(job.recipe.title + (job.steps == [.buildOnly] ? " – Build only" : job.isDownloadOnly ? L(" – download only", " – nur laden") : job.isAddonSync ? L(" – DLC sync", " – DLC-Abgleich") : "")).font(.headline).lineLimit(1)
+                Text(L("\(phase.text) · \(job.completed.count) of \(job.steps.count) steps", "\(phase.text) · \(job.completed.count) von \(job.steps.count) Schritten"))
+                    .font(.caption).foregroundStyle(.secondary)
+                if let explanation = model.queueExplanation(for: job) {
+                    Text(explanation).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Text(job.created.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+struct JobDetail: View {
+    @State private var approveProfile = false
+    @EnvironmentObject var model: AppModel
+    let job: Job
+
+    var body: some View {
+        let phase = model.phase(of: job)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(job.recipe.title + (job.steps == [.buildOnly] ? " – Build only" : job.isDownloadOnly ? L(" – download only", " – nur laden") : job.isAddonSync ? L(" – DLC sync", " – DLC-Abgleich") : "")).font(.title2.bold())
+                    Label(phase.text, systemImage: phase.symbol).foregroundStyle(phase.color)
+                }
+                Spacer()
+                if phase.canResume, job.failureKind?.resumable ?? true {
+                    Button(L("Resume", "Fortsetzen")) { model.resume(job) }.buttonStyle(.borderedProminent)
+                        .disabled(model.resumingJobIDs.contains(job.id) || model.checkingConnectionJobID != nil)
+                } else if phase == .pending {
+                    Button(job.steps == [.buildOnly] ? "Iniciar Build only" : "Iniciar Job") {
+                        model.resume(job)
+                    }.buttonStyle(.borderedProminent)
+                        .disabled(model.resumingJobIDs.contains(job.id) || model.checkingConnectionJobID != nil || model.hasActiveEquivalentJobForPresentation(job))
+                }
+                if phase.canCancel {
+                    Button(L("Cancel", "Abbrechen"), role: .destructive) { model.cancel(job) }
+                }
+            }
+
+            if phase == .finished, let variantID = job.request.localAPKVariantID,
+               job.request.localVariantStorePath == nil || job.request.localVariantStorePath == model.localVariantStore.root.path,
+               let variant = model.localAPKVariants(for: job.recipe).first(where: { $0.id == variantID }) {
+                ForEach((model.localLearning(job.recipe)?.installations ?? []).filter {
+                    $0.jobID == job.id && $0.variantID == variant.id && $0.sha256 == variant.sha256
+                }) { receipt in
+                    FunctionalityReceiptView(receipt: receipt, variant: variant, recipe: job.recipe,
+                        historical: !model.functionalityInstallations(variant, recipe: job.recipe).contains { $0.id == receipt.id })
+                }
+                ForEach(model.legacyFunctionalityInstallations(variant, recipe: job.recipe).filter {
+                    $0.bundleID == job.request.bundleId && $0.deviceID == job.request.device
+                        && job.created <= $0.date && $0.date <= job.updated && job.completed.contains(.stage)
+                }) { receipt in
+                    LegacyFunctionalityView(receipt: receipt, variant: variant, recipe: job.recipe)
+                }
+            }
+
+            if model.resumingJobIDs.contains(job.id) { ProgressView("Verificando conexão para retomar...").controlSize(.small) }
+            if let failure = job.failure, let request = ProfileProvisioning.requestURL(in: failure) {
+                Button("Configurar perfil no Xcode…") { approveProfile = true }
+                    .confirmationDialog("Autorizar configuração de perfil pelo Xcode?", isPresented: $approveProfile) {
+                        Button("Autorizar e abrir Xcode") { model.openProfileSetup(request, job: job) }
+                        Button("Cancelar", role: .cancel) { }
+                    } message: {
+                        Text("O Xcode poderá solicitar um perfil para o Bundle ID, equipe e headset deste build. Será usado o certificado Apple Development existente. Não crie novos certificados. Login e 2FA são manuais. Depois, use Resume; o build será preservado.")
+                    }
+            }
+            if let message = model.resumeMessages[job.id] { Text(message).font(.callout).textSelection(.enabled) }
+            if phase == .stopped, let failure = job.failure {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(L("What Went Wrong", "Woran es lag"), systemImage: "exclamationmark.triangle.fill")
+                            .font(.headline).foregroundStyle(.orange)
+                        Text(ProfileProvisioning.userMessage(failure)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        Divider()
+                        Label(advice(job.failureKind ?? .other), systemImage: "arrow.turn.down.right")
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack {
+                            switch job.failureKind ?? .other {
+                            case .signIn, .setup, .apple:
+                                Button(L("Open Setup", "Einrichtung öffnen")) { model.section = .setup }
+                            case .ownFiles, .notOwned:
+                                Button(L("Open Game Page", "Seite des Spiels öffnen")) {
+                                    model.gamePath = [job.recipe.id]
+                                    model.section = .games
+                                }
+                            case .build:
+                                Button(L("Show Build Log", "Bauprotokoll zeigen")) { reveal(".last-build.log") }
+                            case .copy:
+                                Button(L("Show Copy Log", "Kopierprotokoll zeigen")) { reveal(".last-sync.log") }
+                            case .device:
+                                JobConnectionCheckView(model: model, job: job)
+                            case .gameRunning, .download, .unsupported, .other:
+                                EmptyView()
+                            }
+                            Button(L("Report This Problem …", "Dieses Problem melden …")) {
+                                model.reportJob = job
+                                model.showReport = true
+                            }
+                        }
+                        if job.failureKind?.resumable ?? true {
+                            Text(L("“Resume” continues where it stopped. Whatever has been downloaded or copied is kept.", "Mit „Fortsetzen“ geht es an derselben Stelle weiter. Was schon geladen oder kopiert ist, bleibt erhalten."))
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(6)
+                }
+            }
+            if phase == .interrupted {
+                Text(L("This job was interrupted, for example because the app was quit. “Resume” continues where it stopped.", "Dieser Auftrag wurde unterbrochen, zum Beispiel weil das Programm beendet wurde. „Fortsetzen“ macht an derselben Stelle weiter."))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            if phase == .pending, let explanation = model.queueExplanation(for: job) {
+                Text(explanation).font(.callout).foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(job.steps, id: \.self) { step in
+                    HStack(spacing: 10) {
+                        stepIcon(step, phase: phase).frame(width: 18)
+                        Text(step == .fetch && job.request.localAPKVariantID != nil ? "Validando arquivos do jogo..." : step.title)
+                            .foregroundStyle(job.completed.contains(step) || job.current == step ? .primary : .secondary)
+                    }
+                }
+            }
+
+            if let validation = model.copyProgress[job.id]?.validation {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Validando arquivos do jogo...").font(.headline)
+                    if validation.count > 0 {
+                        Text("Arquivo \(validation.index) de \(validation.count): \(validation.file)")
+                            .font(.callout).lineLimit(2).textSelection(.enabled)
+                        if validation.total > 0 {
+                            ProgressView(value: Double(min(validation.done, validation.total)), total: Double(validation.total))
+                            Text("\(validation.done.formatted()) / \(validation.total.formatted()) bytes · \(validation.cached ? "cache confirmado por identidade e metadados" : "SHA-256 por leitura completa")")
+                                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        }
+                    } else { ProgressView().controlSize(.small) }
+                }
+            }
+            if phase == .running, job.current == .fetch, job.request.localAPKVariantID == nil {
+                if let file = model.copyProgress[job.id]?.file {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L("File \(file.index) of \(file.count): \(file.name)",
+                               "Datei \(file.index) von \(file.count): \(file.name)"))
+                            .font(.callout).lineLimit(2)
+                        if let total = file.total, total > 0 {
+                            ProgressLine(done: file.done, total: total, verb: L("downloaded", "geladen"))
+                                .id("file-\(job.id)-\(file.index)")
+                            Text("\(file.done.formatted()) / \(total.formatted()) bytes")
+                                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        } else {
+                            Text(L("\(file.done) bytes downloaded", "\(file.done) Bytes geladen"))
+                                .font(.caption).monospacedDigit()
+                        }
+                    }
+                }
+                // Der Stand kommt aus dem Bestand selbst (vorhandene und angefangene Dateien), alle zwei Sekunden.
+                TimelineView(.periodic(from: .now, by: 2)) { _ in
+                    if let progress = model.downloadProgress(job) {
+                        ProgressLine(done: progress.done, total: progress.total,
+                                     verb: L("downloaded", "geladen")).id("fetch-\(job.id)")
+                    }
+                }
+            }
+            if phase == .running, job.current == .stage, let progress = model.copyProgress[job.id], progress.total > 0 {
+                // Bei einer großen Datei wird das Gerät währenddessen gefragt, wie viel von ihr schon dort liegt.
+                ProgressLine(done: progress.done, total: progress.total,
+                             verb: progress.via.map { L("copied to the Vision Pro over \($0.text)", "über \($0.text) auf die Vision Pro kopiert") }
+                                 ?? L("copied to the Vision Pro", "auf die Vision Pro kopiert")).id("stage-\(job.id)")
+            }
+
+            HStack {
+                Text(L("Log", "Verlauf")).font(.headline)
+                Spacer()
+                Button(L("Show Log File", "Verlaufsdatei zeigen")) {
+                    NSWorkspace.shared.activateFileViewerSelecting([model.paths.logURL(job: job.id)])
+                }
+                .controlSize(.small)
+            }
+            LogView(log: model.logTail(for: job.id))
+        }
+        .padding(20)
+    }
+
+    /// Der nächste Handgriff zu einer Fehlerart, als Satz.
+    private func advice(_ kind: FailureKind) -> String {
+        switch kind {
+        case .gameRunning:
+            return L("Quit the game on the Vision Pro, then choose “Resume”.", "Beende das Spiel auf der Vision Pro und wähle dann „Fortsetzen“.")
+        case .notOwned:
+            return L("The Meta account used for this official download does not own the game. If it was bought with another account, change the account under Settings → Official Meta downloads.",
+                     "Das für diesen offiziellen Download verwendete Meta-Konto besitzt das Spiel nicht. Wenn es mit einem anderen Konto gekauft wurde, ändere das Konto unter Einstellungen → Offizielle Meta-Downloads.")
+        case .signIn:
+            return L("The Meta sign-in for this official download is missing or no longer valid. Sign in under Settings → Official Meta downloads, then resume.",
+                     "Die Meta-Anmeldung für diesen offiziellen Download fehlt oder gilt nicht mehr. Melde dich unter Einstellungen → Offizielle Meta-Downloads an und setze dann fort.")
+        case .device:
+            return L("The Vision Pro did not respond. Turn it on, put it on or unlock it, keep it on the same Wi-Fi as this Mac, then resume.",
+                     "Die Vision Pro hat nicht geantwortet. Einschalten, aufsetzen oder entsperren, im selben WLAN wie dieser Mac lassen und dann fortsetzen.")
+        case .build:
+            return L("Building or installing failed. Most often this is signing: check the team under “Setup” and open Xcode once to confirm any pending prompts. The build log has the details.",
+                     "Bauen oder Installieren ist gescheitert. Meist liegt es an der Signatur: Team unter „Einrichtung“ prüfen und Xcode einmal öffnen, um offene Rückfragen zu bestätigen. Das Bauprotokoll nennt die Einzelheiten.")
+        case .copy:
+            return L("Copying to the Vision Pro was interrupted – usually because the headset went to sleep. Keep it on and awake, then resume; files already copied are skipped.",
+                     "Das Kopieren auf die Vision Pro wurde unterbrochen – meist, weil das Headset eingeschlafen ist. Aufbehalten und wach halten, dann fortsetzen; schon kopierte Dateien werden übersprungen.")
+        case .download:
+            return L("A download did not complete. Check your internet connection, then resume; it continues where it stopped.",
+                     "Ein Download wurde nicht fertig. Internetverbindung prüfen und fortsetzen; es geht dort weiter, wo es aufgehört hat.")
+        case .ownFiles:
+            return L("Files that you provide yourself are missing. The game’s page says which, and lets you choose the folder.",
+                     "Es fehlen Dateien, die du selbst bereitstellst. Die Seite des Spiels nennt sie und lässt dich den Ordner wählen.")
+        case .setup:
+            return L("Something in “Setup” is missing or has changed.", "In der „Einrichtung“ fehlt etwas oder hat sich geändert.")
+        case .apple:
+            return model.team?.free == true
+                ? L("This comes from Apple, not from the game: you are signing with a free Apple account, and it has limits. “Setup” lists them under “Apple Developer Team”.",
+                    "Das kommt von Apple, nicht vom Spiel: Du signierst mit einem kostenlosen Apple-Konto, und das hat Grenzen. Unter „Einrichtung“ stehen sie beim „Apple-Entwicklerteam“.")
+                : L("This comes from Apple, not from the game. The text above says what Apple wants; afterwards “Resume” continues.",
+                    "Das kommt von Apple, nicht vom Spiel. Der Text oben sagt, was Apple verlangt; danach geht es mit „Fortsetzen“ weiter.")
+        case .unsupported:
+            return L("There is nothing to resume: this app cannot run here. Games built on Unity or Unreal are the ones worth trying.",
+                     "Hier gibt es nichts fortzusetzen: Diese App kann hier nicht laufen. Einen Versuch wert sind Spiele, die auf Unity oder Unreal gebaut sind.")
+        case .other:
+            return L("Try “Resume”. If it stops at the same place again, the log below shows what happened.",
+                     "Versuche „Fortsetzen“. Hält es an derselben Stelle wieder an, zeigt der Verlauf unten, was passiert ist.")
+        }
+    }
+
+    private func reveal(_ name: String) {
+        let file = model.paths.store.directory(for: job.recipe).appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: file.path) { NSWorkspace.shared.activateFileViewerSelecting([file]) }
+    }
+
+    @ViewBuilder
+    private func stepIcon(_ step: InstallStep, phase: JobPhase) -> some View {
+        if job.completed.contains(step) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        } else if job.current == step, phase == .running {
+            ProgressView().controlSize(.small)
+        } else if job.current == step, phase == .stopped {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        } else {
+            Image(systemName: "circle").foregroundStyle(.tertiary)
+        }
+    }
+}
+
+/// Ein Balken mit Stand in Gigabyte und, sobald es etwas zu rechnen gibt, der geschätzten Restzeit.
+/// Die Schätzung beginnt bei dem Stand, den die Zeile beim ersten Erscheinen sieht – was vorher schon da war
+/// (ein fortgesetzter Download), zählt nicht als Tempo.
+struct ProgressLine: View {
+    let done: Int64
+    let total: Int64
+    let verb: String
+    @State private var start: (date: Date, done: Int64)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ProgressView(value: Double(min(done, total)), total: Double(max(total, 1)))
+            Text("\(Installer.gigabytes(done)) \(L("of", "von")) \(Installer.gigabytes(total)) \(verb)\(remaining.map { " · " + $0 } ?? "")")
+                .font(.callout).foregroundStyle(.secondary).monospacedDigit()
+        }
+        .onAppear { if start == nil { start = (Date(), done) } }
+    }
+
+    private var remaining: String? {
+        guard let start, done > start.done, done < total else { return nil }
+        let elapsed = Date().timeIntervalSince(start.date)
+        guard elapsed >= 10 else { return nil }
+        let seconds = Double(total - done) / (Double(done - start.done) / elapsed)
+        return ProgressLine.remainingText(seconds: seconds)
+    }
+
+    /// „noch etwa 12 Minuten“ – grob, denn genauer ist die Schätzung nicht.
+    static func remainingText(seconds: Double) -> String? {
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        if seconds < 90 { return L("about a minute left", "noch etwa eine Minute") }
+        if seconds < 3600 * 1.5 {
+            let m = Int((seconds / 60).rounded())
+            return L("about \(m) minutes left", "noch etwa \(m) Minuten")
+        }
+        let h = (seconds / 3600 * 2).rounded() / 2
+        let text = h == h.rounded() ? String(Int(h)) : String(format: "%.1f", h)
+        return L("about \(text) hours left", "noch etwa \(text.replacingOccurrences(of: ".", with: ",")) Stunden")
+    }
+}
+
+/// Die letzten Zeilen des Verlaufs, jede für sich: Ein einziger großer Text würde bei jeder neuen Zeile ganz neu
+/// gesetzt; so legt die Liste nur an, was in Sicht ist.
+struct LogView: View {
+    let log: LogTail
+
+    var body: some View {
+        let shown = log.lines.suffix(800)
+        // Die Nummer einer Zeile im ganzen Verlauf – sie bleibt, wenn vorn Zeilen herausfallen.
+        let first = log.total - shown.count
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if shown.isEmpty {
+                        Text(L("Nothing yet.", "Noch nichts."))
+                    }
+                    ForEach(first..<log.total, id: \.self) { number in
+                        Text(shown[shown.startIndex + number - first])
+                    }
+                }
+                .font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+            }
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+            .onChange(of: log.total) { proxy.scrollTo(log.total - 1, anchor: .bottom) }
+            .onAppear { proxy.scrollTo(log.total - 1, anchor: .bottom) }
+        }
+    }
+}

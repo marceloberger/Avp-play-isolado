@@ -1,0 +1,74 @@
+{
+  "sourceSHA256": "c8bc32f0ecef667bd2ab38c6076072e7cd28888822ed80ab4f25ef975c4d270c",
+  "cases": [
+    {
+      "libraries": [
+        "libUE4.so"
+      ],
+      "native": null,
+      "package": "com.synthetic.game",
+      "target": "x123456",
+      "kind": "ue4",
+      "entry": "libUE4",
+      "obb": "Android/obb/com.synthetic.game"
+    },
+    {
+      "libraries": [
+        "libUnreal.so"
+      ],
+      "native": null,
+      "package": "com.synthetic.game",
+      "target": "x123456",
+      "kind": "ue4",
+      "entry": "libUnreal",
+      "obb": "Android/obb/com.synthetic.game"
+    },
+    {
+      "libraries": [
+        "libunity.so",
+        "libmain.so"
+      ],
+      "native": null,
+      "package": "com.synthetic.game",
+      "target": "x123456",
+      "kind": "unity",
+      "entry": "libmain",
+      "obb": "obb"
+    },
+    {
+      "libraries": [
+        "libSDL2.so",
+        "libmain.so"
+      ],
+      "native": null,
+      "package": "com.synthetic.game",
+      "target": "x123456",
+      "kind": "sdl2",
+      "entry": "libmain",
+      "obb": "obb"
+    },
+    {
+      "libraries": [
+        "libcustom.so"
+      ],
+      "native": "custom",
+      "package": "com.synthetic.game",
+      "target": "x123456",
+      "kind": "native",
+      "entry": "libcustom",
+      "obb": "Android/obb/com.synthetic.game"
+    },
+    {
+      "libraries": [
+        "libunity.so",
+        "libmain.so"
+      ],
+      "native": null,
+      "package": "com.JustAddWater.SniperEliteVR",
+      "target": "x2544573735586536",
+      "kind": "unity",
+      "entry": "libmain",
+      "obb": "Android/obb/com.JustAddWater.SniperEliteVR"
+    }
+  ]
+}

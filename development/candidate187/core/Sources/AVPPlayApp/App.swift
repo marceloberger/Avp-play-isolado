@@ -1,0 +1,525 @@
+import AppKit
+import AVPPlayCore
+import SwiftUI
+
+/// Der Einstieg: mit `--renew` ist dieses Programm der Hintergrunddienst (ohne Fenster, prüft die Signaturen und
+/// endet), sonst die App.
+@main
+enum Launcher {
+    static func main() {
+        if CommandLine.arguments.contains("--renew") {
+            guard BackgroundService.isEnabled(bundleIdentifier: DataLocation.runningBundleIdentifier) else { return }
+            RenewalAgent.run()
+        }
+        DataLocation.migrateLocalLibraryPreferencesIfNeeded()
+        AVPPlayApp.main()
+    }
+}
+
+struct AVPPlayApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @StateObject private var model = AppDelegate.model
+    @StateObject private var remote = RemoteServer()
+    @AppStorage(MenuBarPreferences.showKey, store: DataLocation.preferences) private var showMenu = true
+
+    var body: some Scene {
+        Window("AVP Play Candidate 187 · Build 187", id: "main") {
+            RootView()
+                .defaultAppStorage(DataLocation.preferences)
+                .environmentObject(model)
+                .environmentObject(remote)
+                .frame(minWidth: 900, minHeight: 600)
+        }
+        .defaultSize(width: 1120, height: 760)
+        .environment(\.locale, L10n.locale)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button(L("Export Game List …", "Spieleliste exportieren …")) { model.exportGameList() }.keyboardShortcut("e")
+                Button(L("Fetch Saved Games from the Vision Pro", "Spielstände von der Vision Pro holen")) { model.fetchAllSaves() }
+            }
+            if !DataLocation.isModified { CommandGroup(replacing: .appInfo) {
+                Button(L("About AVP Play", "Über AVP Play")) { AboutPanel.show() }
+                Button(L("Check for Updates …", "Nach Updates suchen …")) {
+                    Task {
+                        await model.checkForUpdate(manual: true)
+                        switch model.updateState {
+                        case .upToDate: model.notice = L("AVP Play \(model.appVersion) is the latest version.", "AVP Play \(model.appVersion) ist die neueste Fassung.")
+                        case .failed(let why): model.notice = why
+                        default: break
+                        }
+                    }
+                }
+            } } else { CommandGroup(replacing: .appInfo) {
+                Button(L("About AVP Play", "Über AVP Play")) { AboutPanel.show() }
+            } }
+            // Die Einstellungen sind eine Seite des Hauptfensters; ⌘, führt dorthin.
+            CommandGroup(replacing: .appSettings) {
+                Button(L("Settings …", "Einstellungen …")) { model.section = .settings }.keyboardShortcut(",")
+            }
+            CommandGroup(after: .toolbar) {
+                Button(L("Check Again", "Neu prüfen")) { model.refresh() }.keyboardShortcut("r")
+            }
+            CommandGroup(replacing: .help) {
+                Button(L("AVP Play on GitHub", "AVP Play auf GitHub")) {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/myMartek/avp-play#readme")!)
+                }
+                Button(L("Report a Problem …", "Ein Problem melden …")) {
+                    model.reportJob = nil
+                    model.showReport = true
+                }
+            }
+        }
+        MenuBarExtra(isInserted: $showMenu) {
+            IsolatedMenuPanel().defaultAppStorage(DataLocation.preferences).environmentObject(model).environmentObject(remote)
+        } label: {
+            IsolatedMenuLabel().environmentObject(model).environmentObject(remote)
+        }
+        .menuBarExtraStyle(.window)
+
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor static let model = AppModel()
+    @MainActor static var openMain: (() -> Void)?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Auch ohne Programmpaket (beim Entwickeln mit `swift run`) als normales Programm mit Fenster auftreten.
+        NSApp.setActivationPolicy(.regular)
+        // Beim Fotografieren der Ansichten nicht nach vorn drängen: wer gerade am Rechner arbeitet, soll weder
+        // ein Fenster vor die Nase bekommen noch versehentlich hineinklicken.
+        if Snapshot.directory == nil { NSApp.activate(ignoringOtherApps: true) }
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        let preferences = MenuBarPreferences.load()
+        if preferences.staysInMenuBar { sender.setActivationPolicy(.accessory) }
+        return preferences.terminatesWithLastWindow
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows {
+            sender.setActivationPolicy(.regular)
+            Self.openMain?()
+            sender.activate(ignoringOtherApps: true)
+        }
+        return true
+    }
+
+    @MainActor
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard AppDelegate.model.runningJob != nil, Snapshot.directory == nil else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = L("A job is still running.", "Es läuft noch ein Auftrag.")
+        alert.informativeText = L("If you quit now, it will be interrupted. You can resume it under “Jobs” the next time you open the app; files already downloaded are kept.", "Wenn du jetzt beendest, wird er unterbrochen. Beim nächsten Start lässt er sich unter „Aufträge“ fortsetzen; schon geladene Dateien bleiben erhalten.")
+        alert.addButton(withTitle: L("Keep Running", "Weiterlaufen lassen"))
+        alert.addButton(withTitle: L("Quit", "Beenden"))
+        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    }
+
+    /// Ein laufender Auftrag wird beim Beenden unterbrochen; seine Verlaufsdatei wird vorher ordentlich geschlossen.
+    @MainActor
+    func applicationWillTerminate(_ notification: Notification) {
+        AppDelegate.model.closeAllLogs()
+    }
+}
+
+/// Das Fenster „Über AVP Play“: Version, wem was gehört, und dass das Projekt zu niemandem gehört.
+enum AboutPanel {
+    static func show() {
+        let text = L("Installs VR games you already own on your Apple Vision Pro.\n\nAVP Play is an independent open-source project (MIT licence). It is not affiliated with, endorsed by or supported by Apple, Meta or any game publisher. Games are translated with a fork of Klepton by Max Thomas (MIT); the toolchain also contains ANGLE (BSD) and MoltenVK (Apache 2.0).\n\ngithub.com/myMartek/avp-play",
+                     "Installiert VR-Spiele, die dir schon gehören, auf deiner Apple Vision Pro.\n\nAVP Play ist ein unabhängiges Open-Source-Projekt (MIT-Lizenz). Es ist nicht mit Apple, Meta oder einem Spielehersteller verbunden und wird von ihnen weder unterstützt noch empfohlen. Übersetzt werden die Spiele mit einem Fork von Klepton von Max Thomas (MIT); die Toolchain enthält außerdem ANGLE (BSD) und MoltenVK (Apache 2.0).\n\ngithub.com/myMartek/avp-play")
+        let credits = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.labelColor,
+        ])
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits, .applicationName: "AVP Play"])
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+struct RootView: View {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var remote: RemoteServer
+
+    var body: some View {
+        NavigationSplitView {
+            List(selection: Binding(get: { model.section }, set: { model.section = $0 ?? .library })) {
+                ForEach(AppSection.allCases) { section in
+                    Label(section.title, systemImage: section.symbol)
+                        .badge(badge(for: section))
+                        .tag(section)
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 10) {
+                    if let release = model.update { UpdateCard(release: release) }
+                    if model.usesFreeTeam { FreeAccountChip() }
+                    DeviceChip()
+                }
+                .padding(12)
+            }
+        } detail: {
+            Group {
+                switch model.section {
+                case .library: VisualLibraryView182()
+                case .filters: FiltersView()
+                case .games: GamesView()
+                case .localLibrary: LocalLibraryView()
+                case .appleMusic: AppleMusicSearchView()
+                case .jobs: JobsView()
+                case .data: DataView()
+                case .setup: SetupView()
+                case .remote: RemoteControlPage()
+                case .settings: SettingsView()
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if let notice = model.notice { NoticeBar(text: notice) }
+            }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { model.refresh() } label: {
+                        if model.refreshing { ProgressView().controlSize(.small) }
+                        else { Label(L("Check Again", "Neu prüfen"), systemImage: "arrow.clockwise") }
+                    }
+                    .help(L("Check the device, the library and the setup again", "Gerät, Bestand und Einrichtung neu prüfen"))
+                }
+            }
+        }
+        // Die Texte werden beim Zeichnen gewählt; mit der Sprache als Kennung entsteht die Ansicht neu.
+        .id(model.language)
+        .sheet(isPresented: $model.showReport) { ReportSheet(job: model.reportJob).environmentObject(model) }
+        .task {
+            model.installBundledToolchainIfNewer()
+            Task.detached(priority: .background) { CoverCache().prune() }
+            model.loadLocalRecipes()
+            model.refresh()
+            model.reconcileBackgroundService()
+            model.startSaveWatch()
+            model.startNetworkWatch()
+            remote.attach(model)
+            if model.autoUpdateCheck { await model.checkForUpdate(manual: false) }
+            await Snapshot.runIfRequested(model: model)
+        }
+    }
+
+    /// Wie viele Punkte der Einrichtung noch offen sind bzw. wie viele Aufträge Aufmerksamkeit brauchen.
+    private func badge(for section: AppSection) -> Int {
+        switch section {
+        case .library, .filters, .games, .localLibrary, .appleMusic, .data, .remote, .settings: return 0
+        case .jobs: return model.jobs.filter { model.phase(of: $0) == .stopped || model.phase(of: $0) == .running }.count
+        case .setup:
+            // Die Konten zählen nicht: Meta braucht es nur für Spiele aus dem Meta-Store, Steam nur für zwei Spiele.
+            return [model.xcodeProblem != nil, model.device == nil, !model.teamValid, model.toolchainText == nil].filter { $0 }.count
+        }
+    }
+}
+
+struct DeviceChip: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "visionpro")
+                .foregroundStyle(model.device == nil ? Color.secondary : Color.green)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.device?.name ?? L("No Vision Pro", "Keine Vision Pro")).font(.callout.weight(.medium)).lineLimit(1)
+                Text(model.device == nil ? L("not reachable", "nicht erreichbar")
+                     : model.device?.transport.map { L("connected over \($0.text)", "verbunden über \($0.text)") } ?? L("connected", "verbunden"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+struct NoticeBar: View {
+    @EnvironmentObject var model: AppModel
+    let text: String
+
+    var body: some View {
+        // Keine feste Höhe nach dem Text: Die Leiste hängt am Fensterrand, und dort fragt SwiftUI auch nach der
+        // Größe bei kleinster Breite. Ein langer Text meldet dann eine Höhe von vielen Bildschirmen und schiebt
+        // den ganzen Fensterinhalt aus dem Bild. Stattdessen höchstens vier Zeilen; der volle Text ist markierbar.
+        HStack(alignment: .top) {
+            Text(text)
+                .lineLimit(4)
+                .truncationMode(.tail)
+                .textSelection(.enabled)
+                .help(text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("OK") { model.notice = nil }
+        }
+        .padding(12)
+        .background(.regularMaterial)
+        .overlay(alignment: .top) { Divider() }
+    }
+}
+
+/// `--snapshot <Ordner>`: jede Ansicht einmal zeigen, als Bild ablegen und beenden. Damit lässt sich die
+/// Oberfläche prüfen, ohne dass jemand klickt.
+@MainActor
+enum Snapshot {
+    static var directory: URL? {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count else { return nil }
+        return URL(fileURLWithPath: args[i + 1])
+    }
+
+    static func runIfRequested(model: AppModel) async {
+        guard let dir = directory else { return }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        func pause(_ seconds: Double) async { try? await Task.sleep(for: .seconds(seconds)) }
+        hideWindows()
+        await pause(1)
+        // `--snapshot-size <Breite>x<Höhe>`: das Fenster für die Bilder auf eine feste Größe bringen (in Punkten).
+        if let i = CommandLine.arguments.firstIndex(of: "--snapshot-size"), i + 1 < CommandLine.arguments.count {
+            let parts = CommandLine.arguments[i + 1].split(separator: "x").compactMap { Double($0) }
+            var seen: [String] = []
+            for window in NSApp.windows where window.contentView != nil && parts.count == 2 {
+                seen.append("\(window.identifier?.rawValue ?? "-") \(Int(window.frame.width))x\(Int(window.frame.height)) sichtbar=\(window.isVisible) vollbild=\(window.styleMask.contains(.fullScreen))")
+                guard window.isVisible, !window.styleMask.contains(.fullScreen) else { continue }
+                if window.isZoomed { window.zoom(nil) }
+                window.setFrame(NSRect(x: 60, y: 60, width: parts[0], height: parts[1]), display: true, animate: false)
+            }
+            try? seen.joined(separator: "\n").write(to: dir.appendingPathComponent("fenster.txt"), atomically: true, encoding: .utf8)
+            await pause(0.8)
+        }
+        while model.refreshing || model.account == .checking { await pause(0.3) }
+        await pause(1)
+        // die Besitzabfragen laufen mit Abstand; höchstens eine Minute darauf warten
+        var waited = 0.0
+        while model.checkingOwnership, waited < 60 { await pause(0.5); waited += 0.5 }
+        capture("1-spiele", dir)
+        for id in ["doom3quest", "walkabout"] where model.games.contains(where: { $0.id == id }) {
+            model.gamePath = [id]
+            await pause(1.2)
+            capture("2-spiel-\(id)", dir)
+        }
+        // `--open-game <Kennung>`: die Seite eines Spiels öffnen wie per Klick – bei einem ungetesteten Spiel löst
+        // das das Nachschlagen aus – und zeigen, was danach dasteht.
+        // `--search <Text>`: im Katalog suchen wie über das Suchfeld – damit ein Spiel in der Liste steht, das
+        // nicht auf der ersten Seite ist.
+        if let i = CommandLine.arguments.firstIndex(of: "--search"), i + 1 < CommandLine.arguments.count {
+            model.searchText = CommandLine.arguments[i + 1]
+            model.searchCatalog()
+            await pause(3)
+        }
+        // `--released-toolchains`: die Liste älterer Toolchains von GitHub holen, wie es der Knopf auf der Seite
+        // eines Spiels täte (dort ist die Wahl der Toolchain für die Bilder aufgeklappt).
+        if CommandLine.arguments.contains("--released-toolchains") {
+            model.loadReleasedToolchains()
+            var waited = 0.0
+            while model.releasedToolchainsLoading, waited < 30 { await pause(0.5); waited += 0.5 }
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--open-game"), i + 1 < CommandLine.arguments.count {
+            let id = CommandLine.arguments[i + 1]
+            var waited = 0.0
+            while model.allGames.first(where: { $0.id == id })?.catalog == nil, waited < 15 { await pause(0.5); waited += 0.5 }
+            capture("1-spiele-mit-katalog", dir)
+            model.gamePath = [id]
+            await pause(2)
+            waited = 0
+            while model.preparing.contains(id) || model.refreshing, waited < 90 { await pause(0.5); waited += 0.5 }
+            await pause(1.5)
+            capture("2-spiel-\(id)", dir)
+            try? "Hinweis: \(model.prepareNote[id] ?? "-")\nDateien: \(model.allGames.first { $0.id == id }?.recipe.files.map { "\($0.role) \($0.name)" } ?? [])\n"
+                .write(to: dir.appendingPathComponent("nachschlagen.txt"), atomically: true, encoding: .utf8)
+        }
+        model.gamePath = []
+        // `--load-more <Anzahl>`: so viele weitere Seiten des Katalogs nachladen, wie es das Ende der Liste täte.
+        if let i = CommandLine.arguments.firstIndex(of: "--load-more"), i + 1 < CommandLine.arguments.count, let pages = Int(CommandLine.arguments[i + 1]) {
+            var lines = ["Start: \(model.catalog.count) von \(model.catalogTotal.map(String.init) ?? "?") geladen, weitere: \(model.canLoadMore)"]
+            for page in 0..<pages where model.canLoadMore {
+                model.loadMoreCatalog()
+                await pause(0.2)
+                while model.loadingMore { await pause(0.2) }
+                lines.append("Seite \(page + 2): \(model.catalog.count) geladen, \(model.shownGames.count) gezeigt, weitere: \(model.canLoadMore)")
+            }
+            capture("1-spiele-nachgeladen", dir)
+            try? lines.joined(separator: "\n").write(to: dir.appendingPathComponent("nachladen.txt"), atomically: true, encoding: .utf8)
+        }
+        // `--install <Kennung>`: den Auftrag wirklich über die Oberfläche auslösen und bis zum Ende zeigen.
+        if let i = CommandLine.arguments.firstIndex(of: "--install"), i + 1 < CommandLine.arguments.count,
+           let game = model.games.first(where: { $0.id == CommandLine.arguments[i + 1] }) {
+            if let why = model.blocker(for: game) { model.notice = why } else { model.install(game) }
+            await pause(8)
+            capture("3-auftrag-laeuft", dir)
+            while model.runningJob != nil { await pause(1) }
+            await pause(1.5)
+        }
+        // `--download <Kennung>`: nur laden, über die Oberfläche ausgelöst – auch wo Xcode, Toolchain oder Gerät fehlen.
+        if let i = CommandLine.arguments.firstIndex(of: "--download"), i + 1 < CommandLine.arguments.count,
+           let game = model.games.first(where: { $0.id == CommandLine.arguments[i + 1] }) {
+            let before = "Installieren: \(model.blocker(for: game) ?? "frei") | Laden: \(model.downloadBlocker(for: game) ?? "frei") | zu laden: \(game.status.bytesToDownload)"
+            model.section = .games
+            model.gamePath = [game.id]
+            await pause(1.5)
+            capture("2-spiel-\(game.id)-vor-dem-laden", dir)
+            model.download(game)
+            await pause(3)
+            while model.runningJob != nil { await pause(1) }
+            await pause(1.5)
+            capture("3-auftrag-nur-laden", dir)
+            let job = model.jobs.first { $0.recipe.id == game.id }
+            let after = "Auftrag: \(job.map { "\($0.state) \($0.steps.map(\.rawValue))" } ?? "keiner") | Hinweis: \(model.notice ?? "-")"
+            try? [before, after].joined(separator: "\n").write(to: dir.appendingPathComponent("laden.txt"), atomically: true, encoding: .utf8)
+        }
+        // `--sync <Kennung>`: die Zusatzinhalte eines installierten Spiels über die Oberfläche abgleichen.
+        if let i = CommandLine.arguments.firstIndex(of: "--sync"), i + 1 < CommandLine.arguments.count,
+           let game = model.games.first(where: { $0.id == CommandLine.arguments[i + 1] }) {
+            model.gamePath = [game.id]
+            await pause(1.5)
+            capture("2-spiel-\(game.id)-abgleich", dir)
+            model.gamePath = []
+            if let why = model.syncBlocker(for: game) { model.notice = why } else { model.syncAddons(game) }
+            await pause(3)
+            while model.runningJob != nil { await pause(1) }
+            await pause(1.5)
+            try? "Hinweis: \(model.notice ?? "-")\n".write(to: dir.appendingPathComponent("abgleich.txt"), atomically: true, encoding: .utf8)
+        }
+        model.section = .jobs
+        await pause(1.2)
+        capture("3-auftraege", dir)
+        // `--fake-copy`: so tun, als kopiere der erste Auftrag gerade – nur für das Bild des Balkens.
+        if CommandLine.arguments.contains("--fake-copy"), let job = model.jobs.first(where: { $0.current == .stage }) {
+            model.selectedJob = job.id
+            model.runningJob = job.id
+            model.copyProgress[job.id] = InstallProgress(step: .stage, done: 12_400_000_000, total: 33_500_000_000)
+            await pause(1.2)
+            capture("3-auftrag-kopiert", dir)
+            model.runningJob = nil
+            model.copyProgress[job.id] = nil
+        }
+        // `--update-check`: nur nachsehen (mit `AVPPLAY_UPDATE_FEED` auch gegen eine erfundene Liste), nichts einspielen.
+        if CommandLine.arguments.contains("--update-check") { await model.checkForUpdate(manual: true) }
+        // Die Datenverwaltung, sobald gezählt ist. `--move-store <Ordner>`: den Bestand dorthin umziehen lassen,
+        // ohne Rückfrage – gedacht für einen Lauf mit `AVPPLAY_HOME`, nie für die eigenen Daten.
+        model.section = .data
+        await pause(1)
+        var counted = 0.0
+        while model.storage == nil || model.storageScanning, counted < 120 { await pause(0.5); counted += 0.5 }
+        await pause(0.8)
+        capture("4-daten", dir)
+        if let i = CommandLine.arguments.firstIndex(of: "--move-store"), i + 1 < CommandLine.arguments.count,
+           ProcessInfo.processInfo.environment["AVPPLAY_HOME"] != nil {
+            model.moveStore(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]), confirm: false)
+            await pause(0.4)
+            capture("4-daten-umzug", dir)
+            var moving = 0.0
+            while model.storeMove != nil || model.storageScanning, moving < 300 { await pause(0.3); moving += 0.3 }
+            await pause(1.5)
+            capture("4-daten-danach", dir)
+            try? "Ort: \(model.paths.store.root.path)\nHinweis: \(model.storeMoveNote ?? "-")\nSpiele: \(model.storage?.games.map { "\($0.title) \($0.bytes)" } ?? [])\n"
+                .write(to: dir.appendingPathComponent("umzug.txt"), atomically: true, encoding: .utf8)
+        }
+        model.section = .setup
+        await pause(1.2)
+        capture("4-einrichtung", dir)
+        // `--update-now`: nachsehen und einspielen wie per Knopf, aber ohne Neustart; das Ergebnis als Datei.
+        if CommandLine.arguments.contains("--update-now") {
+            await model.checkForUpdate(manual: true)
+            let found = model.update?.version ?? "keine"
+            capture("4-einrichtung-update-gefunden", dir)
+            await model.installUpdate(relaunch: false)
+            try? "gefunden: \(found)\nkann sich ersetzen: \(model.canSelfUpdate)\nZustand danach: \(model.updateState)\n"
+                .write(to: dir.appendingPathComponent("update.txt"), atomically: true, encoding: .utf8)
+        }
+        // `--fix-prompt <Kennung>`: den Auftrag für die KI zu einem Spiel als Datei ablegen.
+        if let i = CommandLine.arguments.firstIndex(of: "--fix-prompt"), i + 1 < CommandLine.arguments.count,
+           let game = model.allGames.first(where: { $0.id == CommandLine.arguments[i + 1] }) {
+            try? model.fixPrompt(for: game, symptoms: [.crash, .controls], details: "It closes right after the logo.")
+                .write(to: dir.appendingPathComponent("fix-auftrag.txt"), atomically: true, encoding: .utf8)
+        }
+        if CommandLine.arguments.contains("--report") {
+            try? model.problemReport().write(to: dir.appendingPathComponent("bericht.txt"), atomically: true, encoding: .utf8)
+            model.showReport = true
+            await pause(1.5)
+            capture("4-problem-melden", dir, window: NSApp.windows.first { $0.isSheet })
+            model.showReport = false
+            await pause(0.8)
+        }
+        // `--choose-tool <Datei>`: dieselbe Stelle, die „Choose File …“ aufruft.
+        if let i = CommandLine.arguments.firstIndex(of: "--choose-tool"), i + 1 < CommandLine.arguments.count {
+            model.adoptTool(from: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+            await pause(2)
+            capture("4-einrichtung-nach-dateiwahl", dir)
+        }
+        // `--notice <Text>`: einen Hinweis zeigen, wie ihn ein Fehler auslöst, und festhalten, was das Fenster tut.
+        if let i = CommandLine.arguments.firstIndex(of: "--notice"), i + 1 < CommandLine.arguments.count {
+            model.notice = CommandLine.arguments[i + 1]
+            await pause(1.5)
+            capture("4-einrichtung-mit-hinweis", dir)
+            if let w = NSApp.windows.first(where: { $0.identifier?.rawValue.contains("main") == true }) {
+                try? "\(Int(w.frame.width))x\(Int(w.frame.height)) min \(Int(w.contentMinSize.width))x\(Int(w.contentMinSize.height))\n"
+                    .write(to: dir.appendingPathComponent("fenster.txt"), atomically: true, encoding: .utf8)
+            }
+            model.notice = nil
+            await pause(0.5)
+        }
+        // `--select <Kennung>[,<Kennung>…]`: Spiele in der Übersicht anhaken und die Leiste dazu zeigen.
+        if let i = CommandLine.arguments.firstIndex(of: "--select"), i + 1 < CommandLine.arguments.count {
+            model.section = .games
+            model.selection = Set(CommandLine.arguments[i + 1].split(separator: ",").map(String.init))
+            await pause(1.2)
+            capture("1-spiele-auswahl", dir)
+            // Wie lange der Hauptfaden nach einem Haken beschäftigt ist: Die kurze Pause endet erst, wenn die
+            // Oberfläche neu gezeichnet ist.
+            var lines = ["Spiele gesamt: \(model.allGames.count), gezeigt: \(model.shownGames.count)"]
+            if let first = model.shownGames.first {
+                for round in 1...6 {
+                    let start = CFAbsoluteTimeGetCurrent()
+                    model.toggleSelection(first)
+                    await pause(0.001)
+                    lines.append(String(format: "Haken %d: %.0f ms", round, (CFAbsoluteTimeGetCurrent() - start) * 1000))
+                    await pause(0.4)
+                }
+                let start = CFAbsoluteTimeGetCurrent()
+                for _ in 0..<20 { _ = model.shownGames }
+                lines.append(String(format: "Liste filtern und sortieren: %.1f ms je Durchgang", (CFAbsoluteTimeGetCurrent() - start) * 50))
+            }
+            try? lines.joined(separator: "\n").write(to: dir.appendingPathComponent("auswahl.txt"), atomically: true, encoding: .utf8)
+            model.selection = []
+        }
+        model.section = .settings
+        await pause(1.3)
+        capture("5-einstellungen", dir)
+        // `--switch-language`: die Sprache im laufenden Programm wechseln, beide Fenster zeigen, zurückstellen.
+        if CommandLine.arguments.contains("--switch-language") {
+            let before = model.languageChoice
+            model.languageChoice = model.language == .de ? .en : .de
+            await pause(1)
+            while model.refreshing { await pause(0.3) }
+            await pause(1)
+            capture("6-gewechselt-einstellungen", dir)
+            model.section = .setup
+            await pause(0.8)
+            capture("6-gewechselt-einrichtung", dir)
+            model.languageChoice = before
+            await pause(0.5)
+        }
+        NSApp.terminate(nil)
+    }
+
+    /// Macht alle Fenster unsichtbar und unklickbar; gezeichnet werden sie trotzdem.
+    static func hideWindows() {
+        for window in NSApp.windows {
+            window.alphaValue = 0
+            window.ignoresMouseEvents = true
+        }
+    }
+
+    static func capture(_ name: String, _ dir: URL, window chosen: NSWindow? = nil) {
+        hideWindows()
+        guard let window = chosen ?? NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil && $0.identifier?.rawValue.contains("main") == true })
+                ?? NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }),
+              let view = window.contentView?.superview ?? window.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("\(name).png"))
+    }
+}

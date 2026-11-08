@@ -1,0 +1,797 @@
+import Foundation
+
+public enum ToolchainError: Error, CustomStringConvertible {
+    case notAToolchain(String)
+    case tooOld(have: String, need: String)
+    case buildFailed(log: URL, hint: String)
+    case syncFailed(log: URL, hint: String)
+    case installFailed(log: URL, hint: String)
+    /// Die Liste der Shader-Kombinationen ließ sich nicht aus den Dateien des Spiels bauen.
+    case pipelineListFailed(String)
+    /// macOS hat `codesign` den Signierschlüssel nicht benutzen lassen.
+    case signingBlocked(String)
+    /// Apple hat das Signieren oder Installieren abgelehnt, aus einem Grund, der sich am Wortlaut erkennen lässt
+    /// (eine Grenze des Kontos, eine fehlende Anmeldung, ein gesperrtes Gerät).
+    case refused(AppleRefusal, free: Bool, log: URL)
+
+    public var description: String {
+        switch self {
+        case .refused(let refusal, let free, let log):
+            return AppleMessages.advice(refusal, free: free) + L(" Log: \(log.path)", " Protokoll: \(log.path)")
+        case .signingBlocked(let detail):
+            return L("macOS did not let this Mac sign with your developer key (\(detail)). Try again; when macOS asks, type your Mac password and click “Always Allow” with the mouse.",
+                     "macOS hat diesem Mac nicht erlaubt, mit deinem Entwicklerschlüssel zu signieren (\(detail)). Versuche es erneut; wenn macOS fragt, gib dein Mac-Passwort ein und klicke mit der Maus auf „Immer erlauben“.")
+        case .pipelineListFailed(let detail):
+            return L("The game's shader list could not be built from its files (\(detail)).",
+                     "Die Shader-Liste des Spiels ließ sich nicht aus seinen Dateien bauen (\(detail)).")
+        case .notAToolchain(let p): return L("There is no toolchain at \(p) (visionos/run.sh is missing).", "Unter \(p) liegt keine Toolchain (visionos/run.sh fehlt).")
+        case .tooOld(let have, let need):
+            return L("The toolchain (\(have)) is older than the recipe requires (\(need)).",
+                     "Die Toolchain (\(have)) ist älter als vom Rezept verlangt (\(need)).")
+        case .syncFailed(let log, let hint):
+            let detail = hint.isEmpty ? "" : ": \(hint)"
+            return L("Syncing the game data failed\(detail). Log: \(log.path)",
+                     "Abgleich der Spieldaten fehlgeschlagen\(detail). Protokoll: \(log.path)")
+        case .installFailed(let log, let hint):
+            let detail = hint.isEmpty ? "" : ": \(hint)"
+            return L("The game was built, but installing it on the Vision Pro failed\(detail). Log: \(log.path)",
+                     "Das Spiel wurde gebaut, aber die Installation auf der Vision Pro ist gescheitert\(detail). Protokoll: \(log.path)")
+        case .buildFailed(let log, let hint):
+            let detail = hint.isEmpty ? "" : ": \(hint)"
+            return L("Build or installation failed\(detail). Log: \(log.path)",
+                     "Build oder Installation fehlgeschlagen\(detail). Protokoll: \(log.path)")
+        }
+    }
+}
+
+/// Die Toolchain ist der projektgepflegte Klepton-Fork samt vorgebauter Frameworks. Sie enthält alles
+/// Spielspezifische, das Code braucht; das Rezept nennt nur das Target und den Mindeststand.
+public struct Toolchain: Sendable {
+    public let root: URL
+    public init(root: URL) throws {
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent("visionos/run.sh").path) else {
+            throw ToolchainError.notAToolchain(root.path)
+        }
+        self.root = root
+    }
+
+    /// Die Beschreibung eines installierten Pakets; `nil` bei einem Arbeitsverzeichnis des Forks.
+    /// Gelesen wird die Datei nur, wenn sie sich seit dem letzten Mal geändert hat (siehe `ManifestCache`).
+    public var manifest: ToolchainManifest? {
+        ManifestCache.shared.manifest(at: root.appendingPathComponent("toolchain.json"))
+    }
+
+    /// Eine bearbeitete Arbeitskopie (siehe `ToolchainManifest.modified`)?
+    public var isModified: Bool { manifest?.modified == true || FileManager.default.fileExists(atPath: root.appendingPathComponent(".experimental-tls170.json").path) }
+
+    /// Wie ein Stand in Listen und Sätzen heißt: seine Nummer, bei einer bearbeiteten Arbeitskopie mit dem Zusatz.
+    public static func name(version: Int, modified: Bool) -> String {
+        modified ? L("\(version) (modified)", "\(version) (modifiziert)") : "\(version)"
+    }
+
+    public var name: String { Toolchain.name(version: version(), modified: isModified) }
+
+    public func commit() -> String {
+        if let m = manifest { return m.commit }
+        let out = (try? Toolchain.capture(["/usr/bin/git", "-C", root.path, "rev-parse", "--short=7", "HEAD"]))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return out.isEmpty ? "unbekannt" : out
+    }
+
+    /// Ab welcher Nummer ein gebautes Spiel als aktuell gilt: der letzte Stand, der an den Spielen selbst etwas
+    /// geändert hat. Ohne diese Angabe (ältere Pakete) die Nummer des Stands.
+    public func appRevision(target: String) -> Int {
+        manifest?.revisions.forTarget(target) ?? appRevision()
+    }
+
+    public func appRevision() -> Int {
+        if let m = manifest { return m.appRevision ?? m.version }
+        return ToolchainPackager.appRevision(checkout: root) ?? version()
+    }
+
+    /// Die fortlaufende Nummer des Stands (Zahl der Commits); 0, wenn sie sich nicht ermitteln lässt.
+    public func version() -> Int {
+        if let m = manifest { return m.version }
+        let out = (try? Toolchain.capture(["/usr/bin/git", "-C", root.path, "rev-list", "--count", "HEAD"])) ?? ""
+        return Int(out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    /// Enthält der Stand der Toolchain den vom Rezept verlangten Commit? Ein Paket beantwortet das aus seiner
+    /// Beschreibung, ein Arbeitsverzeichnis aus der Versionsgeschichte.
+    public func satisfies(minCommit: String) -> Bool {
+        guard !minCommit.isEmpty, minCommit.allSatisfy({ $0.isHexDigit }) else { return false }
+        if let m = manifest { return m.contains(commit: minCommit) }
+        return Toolchain.status(["/usr/bin/git", "-C", root.path, "merge-base", "--is-ancestor", minCommit, "HEAD"]) == 0
+    }
+
+    /// Die Bundle-ID, unter der die Toolchain ein Target baut, sofern keine andere vorgegeben wird.
+    public static func defaultBundleId(target: String, user: String = NSUserName()) -> String {
+        "\(defaultBundlePrefix(user: user)).\(target)"
+    }
+
+    /// Legt APK und entpackten Baum dort ab, wo die Toolchain sie erwartet. Der Baum entsteht frisch aus dem
+    /// APK im Bestand; ein schon passender Baum (gleiche APK-Prüfsumme) bleibt stehen.
+    public func heroDirectory(target: String) -> URL {
+        root.appendingPathComponent("visionos/Assets.xcassets/StartHero-\(target).imageset", isDirectory: true)
+    }
+
+    public func prepare(recipe: Recipe, store: ContentStore, localAPKVariantID: String? = nil,
+                        localVariants: LocalAPKVariantStore = LocalAPKVariantStore(),
+                        verifyLocalAssetHashes: Bool = true, verifyLocalAPKHash: Bool = true) throws {
+        try RuntimePolicy177.requireWorkspace(self)
+        // Fail closed before changing prepared files, icons or stamps.
+        let localSelection = try localAPKVariantID.map {
+            let selected = verifyLocalAssetHashes
+                ? try localVariants.validatedForPreparation(id: $0, for: recipe)
+                : try localVariants.validated(id: $0, for: recipe, verifyAssetHashes: false, verifyAPKHash: verifyLocalAPKHash)
+            try LocalAPKVariantStore.requireCompatibleDependencies(selected.variant, recipe: recipe)
+            return selected
+        }
+        // Das Bild fürs Startfenster. Jedes Mal neu: es ist klein, und ein inzwischen hinterlegtes eigenes Bild
+        // soll ohne weiteres Zutun greifen.
+        if Recipe.isSafeName(recipe.toolchain.target), let hero = StartHero.choose(recipe: recipe, store: store) {
+            try? StartHero.writeImageSet(hero.image, to: heroDirectory(target: recipe.toolchain.target))
+        }
+        guard let apk = recipe.files.first(where: { $0.role == "apk" }), let localName = apk.localName else {
+            // Ein Spiel aus Ordnerbeständen hat kein APK: die Toolchain liest die Bäume selbst, hier fehlt nur das Icon.
+            guard recipe.trees?.isEmpty == false, Recipe.isSafeName(recipe.toolchain.target) else {
+                throw RecipeError.invalid(L("the APK or its destination name is missing", "APK oder dessen Zielname fehlt"))
+            }
+            if let icon = Toolchain.chooseIcon(recipe: recipe, store: store)?.source {
+                try AppIcon.writeImageStack(icon, to: iconDirectory(target: recipe.toolchain.target))
+            }
+            return
+        }
+        let target = recipe.toolchain.target
+        guard Recipe.isSafeName(target), Recipe.isSafeName(localName) else { throw RecipeError.invalid(L("target name", "Target-Name")) }
+        let source = localSelection?.apk ?? store.url(for: apk, in: recipe)
+        if recipe.localExperimental != nil || AutomaticAPKIdentity.resolve(package: recipe.package)?.targetEngine != nil {
+            try RecipeValidation176.validate(ApkUnpacker().inspect(apk: source), recipe: recipe, version: version())
+        }
+        let tree = root.appendingPathComponent(target, isDirectory: true)
+        let stamp = tree.appendingPathComponent(".qi-prepared")
+        // Ein vom Nutzer hinterlegtes Icon gehört zum Stand: ändert es sich, wird neu vorbereitet.
+        let customIcon = Toolchain.customIconURL(store: store, recipe: recipe)
+        let storeCover = Toolchain.storeCoverURL(store: store, recipe: recipe)
+        let customMark = (try? Hashing.sha256(of: customIcon)).map { String($0.prefix(16)) } ?? "-"
+        let coverMark = (try? Hashing.sha256(of: storeCover)).map { String($0.prefix(16)) } ?? "-"
+        let want = localSelection.map { "local:\($0.variant.id):\($0.variant.sha256) \(recipe.versionCode) icon4 \(customMark) \(coverMark)" }
+            ?? "\(apk.sha256 ?? "ohne-pruefsumme") \(recipe.versionCode) icon4 \(customMark) \(coverMark)"
+        let fm = FileManager.default
+
+        let apkTarget = root.appendingPathComponent(localName)
+        if let localSelection {
+            let sameSize = ContentStore.fileSize(apkTarget) == ContentStore.fileSize(source)
+            let sameHash = verifyLocalAPKHash && sameSize
+                && (try? localVariants.hashCache.digest(apkTarget).lowercased()) == localSelection.variant.sha256
+            if !sameHash {
+                let staging = root.appendingPathComponent(".\(localName).incoming-\(UUID().uuidString)")
+                defer { try? fm.removeItem(at: staging) }
+                try fm.copyItem(at: source, to: staging)
+                guard ContentStore.fileSize(staging) == localSelection.variant.size else {
+                    throw LocalAPKVariantError.sizeMismatch(expected: localSelection.variant.size,
+                                                            actual: ContentStore.fileSize(staging) ?? 0)
+                }
+                if verifyLocalAPKHash {
+                    let copiedHash = try localVariants.hashCache.digest(staging).lowercased()
+                    guard copiedHash == localSelection.variant.sha256 else {
+                        throw LocalAPKVariantError.hashMismatch(expected: localSelection.variant.sha256, actual: copiedHash)
+                    }
+                }
+                try? fm.removeItem(at: apkTarget)
+                try fm.moveItem(at: staging, to: apkTarget)
+            }
+        } else if ContentStore.fileSize(apkTarget) != ContentStore.fileSize(source) {
+            try? fm.removeItem(at: apkTarget)
+            try fm.copyItem(at: source, to: apkTarget)
+        }
+        if (try? String(contentsOf: stamp, encoding: .utf8)) == want { return }
+
+        let fresh = root.appendingPathComponent(".\(target).qi-new-\(UUID().uuidString)", isDirectory: true)
+        let info = try ApkUnpacker().unpack(apk: source, to: fresh)
+        guard Toolchain.apkMatches(info, recipe: recipe) else {
+            try? fm.removeItem(at: fresh)
+            throw RecipeError.invalid(L("the APK in the library doesn't match the recipe (\(info.package ?? "?"), code \(info.versionCode ?? "?"))",
+                                        "Das APK im Bestand passt nicht zum Rezept (\(info.package ?? "?"), Code \(info.versionCode ?? "?"))"))
+        }
+        // Das Icon des Spiels, falls das APK eines hergibt. Die Toolchain bindet es über den Ordnernamen ein.
+        if let icon = Toolchain.chooseIcon(recipe: recipe, store: store)?.source {
+            try? AppIcon.writeImageStack(icon, to: iconDirectory(target: target))
+        }
+        try Task.checkCancellation()
+        try want.write(to: fresh.appendingPathComponent(".qi-prepared"), atomically: true, encoding: .utf8)
+        // Preserve the last prepared result and use a rollback-safe swap.
+        let previous = root.appendingPathComponent(".prepared-history/\(target)-\(UUID().uuidString)", isDirectory: true)
+        let hadPrevious = fm.fileExists(atPath: tree.path)
+        if hadPrevious {
+            try fm.createDirectory(at: previous.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.moveItem(at: tree, to: previous)
+        }
+        do { try fm.moveItem(at: fresh, to: tree) }
+        catch {
+            if hadPrevious { try? fm.moveItem(at: previous, to: tree) }
+            throw error
+        }
+    }
+
+    /// Ist das APK das des Rezepts? Der Versionscode muss stimmen. Das Paket auch – außer das Rezept kennt keines:
+    /// Der Katalog führt nicht zu jedem Spiel den Paketnamen, und ein Entwurf übernimmt dann ein leeres Feld. Das
+    /// ist kein anderes Paket, sondern ein unbekanntes; der Versionscode bleibt die Prüfung.
+    public static func apkMatches(_ info: ApkUnpacker.Info, recipe: Recipe) -> Bool {
+        (recipe.package.isEmpty || info.package == recipe.package) && info.versionCode == String(recipe.versionCode)
+    }
+
+    /// Welches Icon ein Spiel bekommt und woher es stammt. Reihenfolge: eigenes Bild des Nutzers, dann das
+    /// Titelbild aus dem Meta-Store (das, was auch die Quest zeigt), dann die Bilder aus der Steam-Bibliothek
+    /// des Nutzers (für Titel ohne Meta-Eintrag), dann das Icon aus dem APK – außer es ist nur der Platzhalter
+    /// der Engine. Gibt es keins, bleibt es beim Standard der Toolchain.
+    public static func chooseIcon(recipe: Recipe, store: ContentStore) -> (source: AppIcon.Source, origin: String)? {
+        if let own = AppIcon.custom(at: customIconURL(store: store, recipe: recipe)) { return (own, L("custom image", "eigenes Bild")) }
+        if let cover = AppIcon.custom(at: storeCoverURL(store: store, recipe: recipe)) {
+            return (cover, L("cover image from the Meta Store", "Titelbild aus dem Meta-Store"))
+        }
+        if let steam = recipe.icon?.steamAppId, let art = AppIcon.steamLibrary(appId: steam) {
+            return (art, L("Steam library", "Steam-Bibliothek"))
+        }
+        if let apk = recipe.files.first(where: { $0.role == "apk" }),
+           let found = try? AppIcon.extract(apk: store.url(for: apk, in: recipe)), !AppIcon.isEnginePlaceholder(found) {
+            return (found, L("icon from the APK", "Icon aus dem APK"))
+        }
+        return nil
+    }
+
+    /// Hier kann der Nutzer ein eigenes Icon hinterlegen (PNG, am besten quadratisch und groß).
+    public static func customIconURL(store: ContentStore, recipe: Recipe) -> URL {
+        store.directory(for: recipe).appendingPathComponent("icon.png")
+    }
+
+    /// Das zwischengespeicherte Titelbild aus dem Store (siehe `StoreArt`).
+    public static func storeCoverURL(store: ContentStore, recipe: Recipe) -> URL {
+        store.directory(for: recipe).appendingPathComponent("store-cover.img")
+    }
+
+    public func iconDirectory(target: String) -> URL {
+        root.appendingPathComponent("visionos/Assets.xcassets/AppIcon-\(target).solidimagestack", isDirectory: true)
+    }
+
+    public func assetsDirectory(recipe: Recipe) -> URL {
+        root.appendingPathComponent(recipe.toolchain.target).appendingPathComponent("assets", isDirectory: true)
+    }
+
+    /// Dateien, die ein Spiel zusätzlich als Dateien im Datenbereich braucht, obwohl sie auch als übersetzter Code im
+    /// Programm stecken: die Qt-Plugins von Steam Link. Qt listet den Ordner auf und liest jede Datei, bevor es sie
+    /// lädt; geladen wird dann trotzdem die signierte Fassung. Leer bei allen Spielen, die das nicht brauchen.
+    public func qtPlugins(recipe: Recipe) -> [URL] {
+        guard let relative = targetValue(recipe.toolchain.target, key: "qtplugins"), !relative.contains("..") else { return [] }
+        let files = (try? FileManager.default.contentsOfDirectory(at: root.appendingPathComponent(relative), includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        return files.filter { $0.lastPathComponent.hasPrefix("libplugins_") && $0.pathExtension == "so" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Anzahl und Gesamtgröße der Asset-Dateien aus dem APK – für den Abgleich mit dem Gerät.
+    public func assetsSummary(recipe: Recipe) -> (count: Int, bytes: Int64) {
+        var count = 0
+        var bytes: Int64 = 0
+        guard let walker = FileManager.default.enumerator(at: assetsDirectory(recipe: recipe),
+                                                          includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) else { return (0, 0) }
+        for case let url as URL in walker {
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            if values?.isRegularFile == true { count += 1; bytes += Int64(values?.fileSize ?? 0) }
+        }
+        return (count, bytes)
+    }
+
+    /// Ob diese Toolchain die Berechtigung weglassen kann, die es für kostenlose Teams nicht gibt. Gefragt wird
+    /// die Toolchain selbst und nicht ihre Nummer, damit auch ein eigener Stand zählt.
+    public var supportsFreeTeams: Bool {
+        guard let text = try? String(contentsOf: root.appendingPathComponent("visionos/gen_xcodeproj.py"), encoding: .utf8) else { return false }
+        return text.contains("KLEPTON_EVA")
+    }
+
+    /// Die Test-Schalter der Toolchain, die die experimentelle Einstellung des Programms in jedem Spiel von Anfang
+    /// an einschaltet: die neue Kopfposen- und die neue Audio-Implementierung. Im Spiel bleiben sie abschaltbar.
+    /// `KL_OVRP_ONE_POSE` wirkt nur noch bei älteren Toolchains (507): Ab Klepton #9 ist es der Standard und kein
+    /// eigener Test-Schalter mehr, die Angabe ist dort ohne Wirkung. Bleibt in der Liste, damit ein Bau mit 507
+    /// weiter tut, was die Einstellung bisher tat.
+    public static let experimentalSwitches = ["KL_OVRP_ONE_POSE", "KL_AUDIO_SINK2"]
+
+    /// Both controller sources and the generated launch-default option must be present.
+    public var supportsSurrealControllers: Bool {
+        guard let generator = try? String(contentsOf: root.appendingPathComponent("visionos/gen_xcodeproj.py"), encoding: .utf8),
+              generator.contains("KLEPTON_CONTROLLER_MODE") else { return false }
+        return ["KleptonControllerInput", "KleptonControllerMode", "KleptonSurrealInput", "KleptonSurrealBackend", "KleptonSurrealView", "KleptonSurrealAim", "KleptonSurrealAimView"].allSatisfy {
+            FileManager.default.fileExists(atPath: root.appendingPathComponent("visionos/Sources/\($0).swift").path)
+        }
+    }
+
+    public func builtControllerMode(recipe: Recipe) -> ControllerMode {
+        let products = root.appendingPathComponent("visionos/build/dd-device-\(recipe.toolchain.target)/Build/Products/Debug-xros")
+        let apps = (try? FileManager.default.contentsOfDirectory(at: products, includingPropertiesForKeys: nil)) ?? []
+        for app in apps where app.pathExtension == "app" {
+            if let data = try? Data(contentsOf: app.appendingPathComponent("Info.plist")),
+               let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+               let value = info["KLControllerModeDefault"] as? String,
+               let mode = ControllerMode(rawValue: value) { return mode }
+        }
+        return .standard
+    }
+
+    public func controllerEnvironment(_ mode: ControllerMode) throws -> [String: String] {
+        if mode == .surreal && !supportsSurrealControllers {
+            throw RecipeError.invalid(L("this toolchain does not include Surreal Touch. Select a compatible custom toolchain; your current toolchain choice has not been changed",
+                                        "diese Toolchain enthält Surreal Touch nicht. Eine kompatible eigene Toolchain auswählen; die aktuelle Wahl wurde nicht geändert"))
+        }
+        return ["KLEPTON_CONTROLLER_MODE": mode.rawValue]
+    }
+
+    /// Ob diese Toolchain Test-Schalter kennt, die eine Installation von Anfang an eingeschaltet hat
+    /// (`KLEPTON_TEST_ON`). Gefragt wird die Toolchain selbst, damit auch ein eigener Stand zählt; eine ältere
+    /// baut wie immer und ihr Bau trägt den Vermerk dann nicht.
+    public var supportsExperimental: Bool {
+        guard let text = try? String(contentsOf: root.appendingPathComponent("visionos/gen_xcodeproj.py"), encoding: .utf8) else { return false }
+        return text.contains("KLEPTON_TEST_ON")
+    }
+
+    /// Der Name, unter dem eine Installation das MetalFX-Hochskalieren des Compositors von Anfang an einschaltet –
+    /// in derselben Liste wie die Test-Schalter (`KLEPTON_TEST_ON`, im Spiel `KLTestOn`). Der Schalter im Spiel
+    /// (Einstellungen › Rendering › „MetalFX upscaling“, `klepton.metalfxUpscale`) bleibt davon unberührt: Was dort
+    /// gewählt ist, gilt.
+    public static let metalFXSwitch = "KL_METALFX_UPSCALE"
+
+    /// Ob diese Toolchain das MetalFX-Hochskalieren hat und eine Installation es von Anfang an einschalten kann.
+    /// Beides wird in ihren Quellen nachgesehen: der Schalter im Spiel (Klepton PR #2) und der Name, mit dem eine
+    /// Installation ihn vorbelegt. Fehlt eins, baut sie wie immer und der Bau trägt den Vermerk nicht.
+    public var supportsMetalFX: Bool {
+        guard supportsExperimental else { return false }
+        let sources = root.appendingPathComponent("visionos/Sources")
+        let texts = ["KleptonTuning.swift", "KleptonCompositor.swift"].compactMap {
+            try? String(contentsOf: sources.appendingPathComponent($0), encoding: .utf8)
+        }.joined(separator: "\n")
+        return texts.contains("klepton.metalfxUpscale") && texts.contains(Toolchain.metalFXSwitch)
+    }
+
+    /// Der Name, unter dem eine Installation sagt, ob die Raumvermessung (Spielbereich, „Raum vermessen“) im Spiel von
+    /// Anfang an an ist (`1`) oder aus (`0`; im Spiel `KLRoomGuardDefault`). Was im Spiel gewählt ist, gilt danach.
+    public static let roomMeasuringVariable = "KLEPTON_ROOM_GUARD"
+
+    /// Ob diese Toolchain die Raumvermessung hat und eine Installation sie vorgeben kann.
+    public var supportsRoomMeasuring: Bool {
+        guard let text = try? String(contentsOf: root.appendingPathComponent("visionos/gen_xcodeproj.py"), encoding: .utf8) else { return false }
+        return text.contains(Toolchain.roomMeasuringVariable)
+    }
+
+    /// Der Name, unter dem eine Installation sagt, mit welcher Sprache ein Spiel beginnt (`GameLanguage`; im Spiel
+    /// `KLGameLanguageDefault` und „Sprache des Spiels“). Was im Spiel gewählt ist, gilt danach, auch nach Updates.
+    public static let gameLanguageVariable = "KLEPTON_GAME_LANGUAGE"
+
+    /// Ob diese Toolchain die Sprache als Auswahl hat und eine Installation sie vorgeben kann.
+    public var supportsGameLanguagePreset: Bool {
+        guard let text = try? String(contentsOf: root.appendingPathComponent("visionos/gen_xcodeproj.py"), encoding: .utf8) else { return false }
+        return text.contains(Toolchain.gameLanguageVariable)
+    }
+    /// Initial XR prediction switch; the game's own preference continues to win.
+    public static let xrPredictionSwitch = "KL_XR_PREDICT"
+
+    /// Ob diese Toolchain die XR-Vorhersage als Test-Schalter hat und sie ohne ihn auslässt. Eine ältere sagt immer
+    /// voraus, was die Option auch sagt; ihr Bau trägt den Vermerk dann nicht.
+    public var supportsXRPrediction: Bool {
+        guard supportsExperimental,
+              let text = try? String(contentsOf: root.appendingPathComponent("visionos/Sources/KleptonTuning.swift"), encoding: .utf8)
+        else { return false }
+        return text.contains("Entry(env: \"\(Toolchain.xrPredictionSwitch)\"")
+    }
+
+    /// Der Name, unter dem eine Installation die Auflösung vorgibt, mit der ein Spiel beginnt (ein Bruchteil wie
+    /// `0.75`; im Spiel `KLRenderScaleDefault`, sonst `render_scale` des Targets). Was der Spieler im Spiel einstellt,
+    /// gilt danach wie immer (`klepton.renderScale`).
+    public static let renderScaleVariable = "KLEPTON_RENDER_SCALE"
+
+    /// Ob eine Installation dieser Toolchain die Startauflösung vorgeben kann (`renderScaleVariable`). Ohne bleibt es
+    /// bei der des Targets.
+    public var supportsRenderScalePreset: Bool {
+        guard let text = try? String(contentsOf: root.appendingPathComponent("visionos/gen_xcodeproj.py"), encoding: .utf8) else { return false }
+        return text.contains(Toolchain.renderScaleVariable)
+    }
+
+    /// Bis wann die zuletzt gebaute App dieses Targets signiert ist – aus dem Profil in ihrem Programmpaket.
+    public func signingExpiry(recipe: Recipe) -> Date? {
+        let products = root.appendingPathComponent("visionos/build/dd-device-\(recipe.toolchain.target)/Build/Products/Debug-xros")
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: products, includingPropertiesForKeys: nil) else { return nil }
+        for app in entries where app.pathExtension == "app" {
+            if let date = SigningRecord.expiry(ofProfileAt: app.appendingPathComponent("embedded.mobileprovision")) { return date }
+        }
+        return nil
+    }
+
+    /// Baut das Target und installiert es. Kopiert werden dabei nur die zwei kleinen Metadateien der Toolchain;
+    /// die Spieldaten überträgt anschließend das ergänzende Kopieren.
+    /// - Parameter experimental: die experimentellen Implementierungen von Anfang an einschalten. Wirkt nur, wo
+    ///   die Toolchain das kann (`supportsExperimental`); der Stempel des Baus sagt, ob es geschehen ist.
+    /// - Parameter metalFX: das MetalFX-Hochskalieren im Spiel von Anfang an einschalten. Wirkt nur, wo die
+    ///   Toolchain das kann (`supportsMetalFX`); auch das sagt der Stempel.
+    /// - Parameter resolution: die Auflösung in Prozent, mit der das Spiel beginnt. Wirkt nur zusammen mit `metalFX`
+    ///   und wo die Toolchain sie vorgeben kann (`supportsRenderScalePreset`); ohne bleibt es bei der des Targets.
+    /// - Parameter xrPrediction: die XR-Vorhersage im Spiel von Anfang an einschalten. Wirkt nur, wo die Toolchain
+    ///   das kann (`supportsXRPrediction`); auch das sagt der Stempel.
+    /// - Parameters displayName, displaySuffix: der Name der App auf dem Gerät statt des üblichen bzw. ein Zusatz
+    ///   dazu (`displayEnvironment`); ohne Angabe bleibt er, wie er war.
+    public func buildAndInstall(recipe: Recipe, team: String, device: Device, bundleId: String?, log: URL,
+                                extraEnvironment: [String: String] = [:], experimental: Bool = false,
+                                metalFX: Bool = false, resolution: Int? = nil, xrPrediction: Bool = false,
+                                displayName: String? = nil, displaySuffix: String? = nil,
+                                controllerMode: ControllerMode = .standard,
+                                runtimeOptions: InstallRequest? = nil,
+                                store: ContentStore = ContentStore(root: ContentStore.defaultRoot),
+                                localAPKVariantID: String? = nil,
+                                localVariants: LocalAPKVariantStore = LocalAPKVariantStore(),
+                                requireExistingBuild: Bool = false,
+                                report: @Sendable (String) -> Void = { _ in },
+                                activity: @Sendable (String) -> Void = { _ in }) throws -> InstalledBuild {
+        try RuntimePolicy177.requireSource(self)
+        report("Runtime efetivo: " + RuntimePolicy177.label)
+        guard team.count == 10, team.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
+            throw RecipeError.invalid(L("team ID '\(team)' (expected: 10 characters)", "Team-ID '\(team)' (erwartet: 10 Zeichen)"))
+        }
+        var runtime = runtimeOptions ?? InstallRequest(toolchain: root.path)
+        if runtimeOptions == nil {
+            runtime.experimental = experimental; runtime.metalFX = metalFX
+            runtime.xrPrediction = xrPrediction; runtime.resolution = resolution
+        }
+        let controllerEnvironment = try runtimeEnvironment(recipe: recipe, request: runtime, controller: controllerMode)
+        var env = ProcessInfo.processInfo.environment
+        for key in ["KLEPTON_SCOTLAND2","KLEPTON_FRAMEGEN","KLEPTON_SURREAL_SDK","KLEPTON_SURREAL_SUPPORT","SC2_GAME_PROFILE","SC2_BUILD_MODE","SC2_TEST_SET"] { env[key] = nil }
+        // Nur was macOS und Xcode mitbringen – auf jedem Mac dasselbe, ob dort Homebrew oder ein anderes
+        // Python liegt oder nicht. Sonst baut es beim einen mit Werkzeugen, die dem anderen fehlen.
+        env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        env["KLEPTON_TEAM"] = team                      // nie die Zertifikats-Erkennung der Toolchain benutzen
+        env["KLEPTON_TARGET"] = recipe.toolchain.target
+        env["KLEPTON_DEVICE"] = device.udid
+        env["KL_SKIP_STAGE"] = "1"
+        env["KL_SKIP_LAUNCH"] = "1"
+        // Was die App-Liste des Geräts später über diese Installation sagt.
+        // Eine installierte App zeigt das Startfenster eines Spiels, nicht den Boot-Bericht der Entwicklung.
+        env["KLEPTON_START_SCREEN"] = "1"
+        env["KLEPTON_APP_VERSION"] = AppStamp.short(versionName: recipe.versionName)
+        let experimental = experimental && supportsExperimental
+        let metalFX = metalFX && supportsMetalFX
+        // Die Startauflösung gibt es nur mit MetalFX und einer Toolchain, die sie liest; der Stempel trägt, was gilt.
+        let resolution = metalFX && supportsRenderScalePreset && MetalFXResolution.environmentValue(resolution) != nil
+            ? resolution.map(MetalFXResolution.clamped) : nil
+        let xrPrediction = xrPrediction && supportsXRPrediction
+        env["KLEPTON_APP_BUILD"] = AppStamp.build(versionCode: recipe.versionCode, toolchainVersion: version(), modified: true,
+                                                  experimental: experimental, metalFX: metalFX, resolution: resolution,
+                                                  xrPrediction: xrPrediction, coreMods: runtime.coreMods == true)
+        // Nie aus der Umgebung dieses Programms übernehmen: Was eingeschaltet ist, sagt allein der Auftrag.
+        let switchesOn = (experimental ? Toolchain.experimentalSwitches : []) + (metalFX ? [Toolchain.metalFXSwitch] : [])
+            + (xrPrediction ? [Toolchain.xrPredictionSwitch] : [])
+        env["KLEPTON_TEST_ON"] = switchesOn.isEmpty ? nil : switchesOn.joined(separator: ",")
+        env[Toolchain.renderScaleVariable] = MetalFXResolution.environmentValue(resolution)
+        if let bundleId { env["KLEPTON_BUNDLE_ID"] = bundleId }
+        // Ein kostenloses Team bekommt von Apple „Increased Memory Limit“, aber weder „Extended Virtual
+        // Addressing“ noch „Low-Latency Streaming“. Mit einer der beiden im Auftrag scheitert die ganze Signatur.
+        if AppleTeams.isFree(team) {
+            guard supportsFreeTeams else {
+                throw RecipeError.invalid(L("a free Apple team: this toolchain cannot build for one yet. Update the toolchain (see “Setup”)",
+                                            "ein kostenloses Apple-Team: Diese Toolchain kann dafür noch nicht bauen. Aktualisiere die Toolchain (siehe „Einrichtung“)"))
+            }
+            env["KLEPTON_EVA"] = "0"
+            env["KLEPTON_LOW_LATENCY"] = "0"
+        }
+        env.merge(Toolchain.genericEnvironment(recipe: recipe)) { _, new in new }
+        env.merge(Toolchain.displayEnvironment(name: displayName, suffix: displaySuffix)) { _, new in new }
+        // These defaults come only from the explicit request/app namespace, never shell globals.
+        env[Toolchain.roomMeasuringVariable] = nil
+        env[Toolchain.gameLanguageVariable] = nil
+        env.merge(extraEnvironment) { _, new in new }
+        env.merge(controllerEnvironment) { _, new in new }
+
+        // No run.sh: it may request profiles/certificates implicitly. Compile unsigned,
+        // persist the artifact, then select an existing compatible profile and sign a copy.
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        var keyData = try encoder.encode(recipe)
+        let explicit = Toolchain.unsignedBuildEnvironment(env)
+        keyData.append(try encoder.encode(explicit))
+        keyData.append(Data(commit().utf8))
+        if let freshID = runtime.freshLocalBuildID { keyData.append(Data(freshID.utf8)) }
+        if version() == 850 && commit() == "cc2856c" {
+            keyData.append(Data("850-cc2856c-tls168".utf8))
+        }
+        keyData.append(Data((runtime.localAssetsSHA256 ?? "missing-local-assets-fingerprint").utf8))
+        let tree = root.appendingPathComponent(recipe.toolchain.target)
+        if let walker = FileManager.default.enumerator(at: tree, includingPropertiesForKeys: [.isRegularFileKey]) {
+            var hashes: [String: String] = [:]
+            for case let file as URL in walker where (try file.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true {
+                hashes[String(file.path.dropFirst(tree.path.count))] = try SHA256FileCache.shared.digest(file)
+            }
+            keyData.append(try encoder.encode(hashes))
+        }
+        // A key uses only job inputs, not a transient connection or signing-profile expiry.
+        let key = Hashing.sha256(of: keyData)
+        let pending = store.directory(for: recipe).appendingPathComponent(".pending-build.json")
+        let artifact: ReusableBuild
+        if let existing = try PendingBuild.load(at: pending, key: key) {
+            artifact = existing
+        } else {
+            guard !requireExistingBuild else {
+                throw JobError.cannotResume("O build preservado não corresponde mais aos dados/opções deste Job. Recompilação automática bloqueada.")
+            }
+            let result = try buildOnly(recipe: recipe, store: store, localAPKVariantID: localAPKVariantID,
+                localVariants: localVariants, bundleID: bundleId ?? Toolchain.defaultBundleId(target: recipe.toolchain.target),
+                workspaceRoot: DataLocation.base.appendingPathComponent("compiled-games"), extraEnvironment: explicit,
+                process: { command, log in
+                    activity(command.executable.lastPathComponent == "xcodebuild" ? "Compilando aplicativo..." : "Preparando componentes da compilação...")
+                    return try BuildOnlyPipeline.runProcessForTesting(command, log)
+                })
+            let info = try ReusableBuild.infoPlist(result.app.appendingPathComponent("Info.plist"))
+            guard let realBundle = info["CFBundleIdentifier"] as? String,
+                  realBundle == (bundleId ?? Toolchain.defaultBundleId(target: recipe.toolchain.target)) else {
+                throw ToolchainError.signingBlocked("Bundle ID gerado diverge do solicitado. Build preservado; assinatura bloqueada.")
+            }
+            artifact = ReusableBuild(app: result.app, workspace: result.workspace, sourceJobID: "install",
+                bundleID: realBundle, files: try ReusableBuild.inventory(result.app))
+            try PendingBuild.save(artifact, key: key, at: pending)
+        }
+        report("Build preservado: \(artifact.app.path). Selecionando perfil compatível existente.")
+        try ("Build preservado: \(artifact.app.path)\nSelecionando perfil Apple; provisionamento automático quando autorizado pelo Job.\n")
+            .write(to: log, atomically: true, encoding: .utf8)
+        activity("Assinando aplicativo...")
+        let signed = try ExistingAppSigner.sign(artifact, team: team, device: device,
+            outputRoot: DataLocation.base.appendingPathComponent("signed-existing"),
+            automaticProvisioning: runtime.automaticLocalInstall == true, report: report)
+        try Task.checkCancellation()
+        let control = DeviceControl()
+        activity("Instalando aplicativo no Vision Pro...")
+        try RuntimePolicy177.requireSource(self)
+        try RuntimePolicy177.requireArtifact(artifact)
+        try control.install(signed.app, device: control.pick(udid: device.udid))
+        guard try control.apps(device: device).contains(where: { $0.bundleIdentifier == artifact.bundleID }) else {
+            throw DeviceError.tool("Instalação não confirmada; build preservado para Resume")
+        }
+        let productInfo = try ReusableBuild.infoPlist(signed.app.appendingPathComponent("Info.plist"))
+        let productSettings = Dictionary(uniqueKeysWithValues: productInfo.filter { $0.key.hasPrefix("KL") }
+            .map { ("Info." + $0.key, String(describing: $0.value)) })
+        let evidence = LocalAPKBuildEvidence(
+            signedBuildSHA256: try LocalAPKBuildEvidence.digest(ReusableBuild.inventory(signed.app)),
+            unsignedBuildSHA256: try LocalAPKBuildEvidence.digest(artifact.files),
+            recipeSHA256: try LocalAPKBuildEvidence.recipeHash(recipe), settings: try RuntimePolicy177.evidence().merging(explicit.merging(productSettings) { _, new in new }) { _, new in new })
+        return InstalledBuild(expires: signed.expires, evidence: evidence)
+    }
+
+    static func unsignedBuildEnvironment(_ environment: [String: String]) -> [String: String] {
+        environment.filter {
+            ($0.key.hasPrefix("KLEPTON_") || $0.key.hasPrefix("KL_") || $0.key.hasPrefix("SC2_"))
+                && !["KLEPTON_DEVICE", "KLEPTON_SIM_UDID"].contains($0.key)
+        }
+    }
+
+    /// Der Ordner, in dem die Toolchain für ein Spiel aus Ordnerbeständen das Abbild dessen aufbaut, was aufs
+    /// Gerät gehört (`Documents/lx`). Es besteht aus harten Links und kostet keinen Platz – solange es auf demselben
+    /// Laufwerk liegt wie der Bestand, denn ein harter Link verlässt sein Laufwerk nicht. Liegt der Bestand woanders
+    /// als die Toolchain, entsteht das Abbild deshalb im Bestand; neben der Toolchain würde aus jedem Link eine Kopie
+    /// (bei Half-Life: Alyx rund 70 GB auf dem Systemlaufwerk). Die Toolchain erfährt den Ort über `KL_LX_MIRROR`.
+    public func mirrorDirectory(recipe: Recipe, store: ContentStore) -> URL {
+        if StoreLocation.sameVolume(root, store.root) {
+            return root.appendingPathComponent("visionos/build/lxstage/\(recipe.toolchain.target)/lx", isDirectory: true)
+        }
+        return store.root.appendingPathComponent(".lxstage/\(recipe.id)-\(recipe.versionCode)/lx", isDirectory: true)
+    }
+
+    /// Lässt die Toolchain das Abbild aufbauen (`copy: false`) oder es aufs Gerät übertragen. Welche Dateien
+    /// dazugehören, entscheidet die Toolchain: Bibliotheken nur, soweit das Spiel sie lädt; keine Links.
+    public func syncTrees(recipe: Recipe, environment: [String: String], device: Device, bundleId: String?,
+                          copy: Bool, log: URL) throws {
+        var env = ProcessInfo.processInfo.environment
+        env["KLEPTON_TARGET"] = recipe.toolchain.target
+        if let bundleId { env["KLEPTON_BUNDLE_ID"] = bundleId }
+        env.merge(environment) { _, new in new }
+        if !FileManager.default.fileExists(atPath: log.path) { FileManager.default.createFile(atPath: log.path, contents: nil) }
+        let handle = try FileHandle(forWritingTo: log)
+        defer { try? handle.close() }
+        handle.seekToEndOfFile()
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        p.arguments = ["stage_sync.py", "--phase", "all", "--device", device.udid] + (copy ? [] : ["--dry-run"])
+        p.currentDirectoryURL = root.appendingPathComponent("visionos", isDirectory: true)
+        p.environment = env
+        p.standardOutput = handle
+        p.standardError = handle
+        p.standardInput = FileHandle.nullDevice
+        try p.run()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else {
+            let text = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+            let hint = text.split(separator: "\n").last { $0.contains("!!") }
+            throw ToolchainError.syncFailed(log: log, hint: hint.map { String($0.prefix(160)) } ?? "")
+        }
+    }
+
+    // MARK: Pipeline-Liste
+
+    /// Was aus der Pipeline-Liste eines Spiels aufs Gerät gehört.
+    public struct PipelineList: Sendable {
+        /// Das Archiv, auf diesem Mac aus der Liste und den Dateien des Spiels gebaut.
+        public let archive: URL
+        /// Die Gerätebeschreibung, mit der die Brille das Archiv schon vor dem ersten Start des Spiels übersetzen kann.
+        public let deviceInfo: URL?
+        /// Die Zeile, mit der das Werkzeug sagt, was es gefunden hat.
+        public let summary: String
+    }
+
+    /// Die Liste der Shader-Kombinationen, die die Toolchain für dieses Spiel mitbringt (`visionos/pipelines/
+    /// <Target>.pipelines`) – oder `nil`, wenn sie für das Spiel keine hat.
+    ///
+    /// Die Liste nennt nur, welche Shader in welcher Kombination gebraucht werden und wo jeder in den Dateien des
+    /// Spiels steht; die Shader-Programme selbst sind Spielinhalt und stehen nicht darin.
+    public func pipelineRecipe(recipe: Recipe) -> URL? {
+        let list = root.appendingPathComponent("visionos/pipelines/\(recipe.toolchain.target).pipelines")
+        let tool = root.appendingPathComponent("tools/unity_pipelines.py")
+        let fm = FileManager.default
+        return fm.fileExists(atPath: list.path) && fm.fileExists(atPath: tool.path) ? list : nil
+    }
+
+    /// Unter welchem Namen das gebaute Archiv im Ordner des Spiels liegt: je Stand der Liste eines.
+    public static func pipelineArchiveName(target: String, recipeData: Data) -> String {
+        "\(target)-\(Hashing.sha256(of: recipeData).prefix(16)).foz"
+    }
+
+    /// Baut aus der Liste und den Dateien des Spiels in `gameFiles` das Archiv, das die Brille vor dem Start
+    /// übersetzt – einmal je Stand der Liste; danach liegt es im Ordner des Spiels (`.pipelines/`). `nil`, wenn die
+    /// Toolchain für das Spiel keine Liste hat. Die Shader-Programme kommen aus der eigenen Kopie des Spiels und
+    /// verlassen den Mac nur in Richtung der eigenen Brille.
+    public func pipelineList(recipe: Recipe, gameFiles: URL) throws -> PipelineList? {
+        guard let list = pipelineRecipe(recipe: recipe) else { return nil }
+        let data = try Data(contentsOf: list)
+        let folder = gameFiles.appendingPathComponent(".pipelines", isDirectory: true)
+        let archive = folder.appendingPathComponent(Toolchain.pipelineArchiveName(target: recipe.toolchain.target, recipeData: data))
+        let note = archive.appendingPathExtension("txt")
+        let info = root.appendingPathComponent("visionos/pipelines/\(recipe.toolchain.target).device-info.json")
+        let deviceInfo = FileManager.default.fileExists(atPath: info.path) ? info : nil
+        if FileManager.default.fileExists(atPath: archive.path), let summary = try? String(contentsOf: note, encoding: .utf8) {
+            return PipelineList(archive: archive, deviceInfo: deviceInfo, summary: summary)
+        }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // Ältere Stände derselben Liste braucht niemand mehr.
+        for old in (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        where old.lastPathComponent.hasPrefix("\(recipe.toolchain.target)-") {
+            try? FileManager.default.removeItem(at: old)
+        }
+        let partial = folder.appendingPathComponent(".building-\(UUID().uuidString).foz")
+        defer { try? FileManager.default.removeItem(at: partial) }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        p.arguments = [root.appendingPathComponent("tools/unity_pipelines.py").path, "build", list.path, gameFiles.path, partial.path]
+        p.currentDirectoryURL = root
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        p.environment = env
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = out
+        p.standardInput = FileHandle.nullDevice
+        try p.run()
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        guard p.terminationStatus == 0, FileManager.default.fileExists(atPath: partial.path) else {
+            throw ToolchainError.pipelineListFailed(String(text.suffix(300)))
+        }
+        // Die letzte Zeile nennt, wie viele Shader in dieser Kopie des Spiels gefunden wurden; der Pfad davor ist der
+        // vorläufige Name und sagt niemandem etwas.
+        let last = text.split(separator: "\n").last.map(String.init) ?? ""
+        let summary = last.range(of: ": ").map { String(last[$0.upperBound...]) } ?? last
+        try FileManager.default.moveItem(at: partial, to: archive)
+        try? summary.write(to: note, atomically: true, encoding: .utf8)
+        return PipelineList(archive: archive, deviceInfo: deviceInfo, summary: summary)
+    }
+
+    static func capture(_ argv: [String]) throws -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: argv[0])
+        p.arguments = Array(argv.dropFirst())
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        try p.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func status(_ argv: [String]) -> Int32 {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: argv[0])
+        p.arguments = Array(argv.dropFirst())
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        guard (try? p.run()) != nil else { return -1 }
+        p.waitUntilExit()
+        return p.terminationStatus
+    }
+}
+
+/// Die gelesenen `toolchain.json` aller Toolchains dieses Prozesses. Die Oberfläche fragt bei jedem Neuzeichnen
+/// nach Nummer und Commit; gelesen und dekodiert wird nur, wenn sich die Datei geändert hat (Änderungszeit,
+/// Größe oder Inode) oder sie neu ist. Fehlt sie, gibt es nichts zu merken.
+final class ManifestCache: @unchecked Sendable {
+    static let shared = ManifestCache()
+
+    private struct Stamp: Equatable {
+        var seconds: Int, nanoseconds: Int, size: Int64, inode: UInt64
+    }
+    private var entries: [String: (stamp: Stamp, manifest: ToolchainManifest?)] = [:]
+    private let lock = NSLock()
+
+    func manifest(at url: URL) -> ToolchainManifest? {
+        let path = url.path
+        var info = stat()
+        guard stat(path, &info) == 0 else {
+            lock.withLock { _ = entries.removeValue(forKey: path) }
+            return nil
+        }
+        let stamp = Stamp(seconds: Int(info.st_mtimespec.tv_sec), nanoseconds: Int(info.st_mtimespec.tv_nsec),
+                          size: Int64(info.st_size), inode: UInt64(info.st_ino))
+        if let known = lock.withLock({ entries[path] }), known.stamp == stamp { return known.manifest }
+        let manifest = (try? Data(contentsOf: url)).flatMap { try? ToolchainPackager.decoder.decode(ToolchainManifest.self, from: $0) }
+        lock.withLock { entries[path] = (stamp, manifest) }
+        return manifest
+    }
+}
+
+/// Die Auflösung, mit der ein Spiel beginnt, wenn das MetalFX-Hochskalieren von Anfang an eingeschaltet ist. Bei 100 %
+/// hat das Hochskalieren nichts zu tun; darum belegt das Einschalten die Auflösung mit 75 % vor. Ändert der Spieler sie
+/// danach, gilt sein Wert; das Ausschalten stellt den Wert von vor dem Einschalten wieder her, ohne einen 100 %.
+public enum MetalFXResolution {
+    /// Was das Einschalten vorbelegt.
+    public static let preset = 75
+    /// Ohne Vorgabe: die volle Auflösung.
+    public static let full = 100
+    /// Was sich einstellen lässt, in Schritten von 5 – so weit, wie es auch der Regler im Spiel zulässt.
+    public static let range = 50...100
+
+    /// Der Stand der Einstellung: die Auflösung und der Wert von vor dem Einschalten, falls es einen gab.
+    public struct State: Equatable, Sendable {
+        public var resolution: Int
+        public var before: Int?
+        public init(resolution: Int, before: Int? = nil) { self.resolution = resolution; self.before = before }
+    }
+
+    /// Was nach dem Umlegen des MetalFX-Schalters gilt. Ein: vorbelegen und den bisherigen Wert merken. Aus: den
+    /// gemerkten zurück, ohne einen 100 %. Ein Schalten auf den Stand, der schon gilt, ändert nichts – sonst ginge
+    /// der eigene Wert des Spielers verloren.
+    public static func switched(metalFX on: Bool, was: Bool, state: State) -> State {
+        guard on != was else { return state }
+        return on ? State(resolution: preset, before: clamped(state.resolution))
+                  : State(resolution: state.before.map(clamped) ?? full)
+    }
+
+    /// Ein Wert in `range`, auf 5 gerundet.
+    public static func clamped(_ percent: Int) -> Int {
+        min(max(Int((Double(percent) / 5).rounded()) * 5, range.lowerBound), range.upperBound)
+    }
+
+    /// Was `--resolution` auf der Kommandozeile ergibt, und eine Warnung, wenn der Wert so nicht gilt: ohne
+    /// `--metalfx` wird er nicht gebraucht, sonst ohne Angabe die Vorbelegung, und außerhalb des Bereichs oder
+    /// zwischen den Schritten der nächste gültige.
+    public static func commandLine(metalFX: Bool, value: String?) -> (resolution: Int?, warning: String?) {
+        guard metalFX else {
+            return (nil, value.map { _ in L("--resolution only applies together with --metalfx; it is ignored.",
+                                              "--resolution gilt nur zusammen mit --metalfx; es wird nicht beachtet.") })
+        }
+        guard let value else { return (preset, nil) }
+        guard let percent = Int(value.trimmingCharacters(in: .whitespaces)) else {
+            return (preset, L("--resolution \(value): not a whole number of percent; \(preset)% is used.",
+                              "--resolution \(value): keine ganze Prozentzahl; es gilt \(preset) %."))
+        }
+        let used = clamped(percent)
+        guard used != percent else { return (used, nil) }
+        return (used, L("--resolution \(percent): possible are \(range.lowerBound) to \(range.upperBound)% in steps of 5; \(used)% is used.",
+                        "--resolution \(percent): möglich sind \(range.lowerBound) bis \(range.upperBound) % in Schritten von 5; es gilt \(used) %."))
+    }
+
+    /// Was die Toolchain unter `Toolchain.renderScaleVariable` bekommt: der Bruchteil, oder nichts bei 100 % (dann
+    /// bleibt es bei der Auflösung des Targets) und ohne Angabe.
+    public static func environmentValue(_ percent: Int?) -> String? {
+        guard let percent else { return nil }
+        let value = clamped(percent)
+        return value < full ? String(format: "%.2f", Double(value) / 100) : nil
+    }
+}

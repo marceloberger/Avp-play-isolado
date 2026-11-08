@@ -1,0 +1,50 @@
+{
+ "files": [
+  {
+   "dest": "",
+   "id": "5540254549384225",
+   "localName": "x2223615721048141.apk",
+   "name": "WKND-Android-Shipping-arm64-es2.apk",
+   "required": true,
+   "role": "apk",
+   "size": 35366584,
+   "sha256": "153b8440431494f59dfca82f02bfd3f32267538989468f4a923e86d1eef6c899"
+  },
+  {
+   "dest": "@obb",
+   "id": "5540250242717989",
+   "name": "main.387778.com.ILMxLAB.VaderImmortal.ep2.obb",
+   "required": true,
+   "role": "main-obb",
+   "size": 3745011013,
+   "sha256": "422551a8133bdcce65e19cc0926531fbc5cb40714cd7f351fb1d91a48e075d20"
+  }
+ ],
+ "id": "store-2223615721048141",
+ "package": "com.ILMxLAB.VaderImmortal.ep2",
+ "schema": 1,
+ "status": {
+  "playability": "verified",
+  "download": "proven",
+  "notes": [
+   {
+    "en": "Marked as verified by the project on 2026-10-19. File list as Meta's tool reports it for this build; 2 of 2 checksums recorded from a download.",
+    "de": "Vom Projekt am 2026-10-19 als geprüft markiert. Dateiliste, wie Metas Werkzeug sie für diesen Build nennt; 2 von 2 Prüfsummen aus einem Download erfasst."
+   },
+   {
+    "en": "Vader Immortal: Episode II. The same engine build and the same fixes as Episode I, which the project played on an Apple Vision Pro; this episode was checked on a Mac up to its comfort menu. Starts at 120 Hz with a picture on every second refresh (an even 60 a second) and 4096 pixels an eye; the start window changes each. Needs toolchain 28e177c or newer.",
+    "de": "Vader Immortal: Episode II. Dieselbe Engine und dieselben Korrekturen wie Episode I, die das Projekt auf einer Apple Vision Pro gespielt hat; diese Episode wurde auf einem Mac bis zu ihrem Komfortmenü geprüft. Startet mit 120 Hz und einem Bild bei jeder zweiten Bildwiederholung (gleichmäßig 60 pro Sekunde) und 4096 Pixeln je Auge; im Startfenster ist jedes davon einstellbar. Braucht Toolchain 28e177c oder neuer."
+   }
+  ]
+ },
+ "store": {
+  "appId": "2223615721048141"
+ },
+ "title": "Vader Immortal: Episode II",
+ "toolchain": {
+  "minCommit": "28e177c",
+  "target": "x2223615721048141"
+ },
+ "versionCode": 387778,
+ "versionName": "2.0.3+667261.cl.387778"
+}

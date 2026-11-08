@@ -1,0 +1,92 @@
+import Foundation
+
+/// Woran ein Auftrag hängen geblieben ist, als Art – damit eine Oberfläche den nächsten Handgriff anbieten kann,
+/// ohne Fehlertexte zu deuten. Der Text des Fehlers bleibt daneben erhalten.
+public enum FailureKind: String, Codable, Sendable {
+    /// Das Spiel läuft gerade auf dem Gerät; eine Installation würde es beenden.
+    case gameRunning
+    /// Das Konto besitzt das Spiel nicht.
+    case notOwned
+    /// Kein gültiger Zugang zu Meta.
+    case signIn
+    /// Das Gerät ist nicht erreichbar oder nimmt den Befehl nicht an.
+    case device
+    /// Bauen oder Installieren ist gescheitert.
+    case build
+    /// Das Kopieren der Daten aufs Gerät ist gescheitert.
+    case copy
+    /// Ein Download ist gescheitert oder unvollständig.
+    case download
+    /// Es fehlen Dateien, die der Nutzer selbst bereitstellt.
+    case ownFiles
+    /// Etwas an der Einrichtung fehlt (Team, Toolchain).
+    case setup
+    /// Apple hat abgelehnt: eine Grenze des (kostenlosen) Kontos, eine fehlende Anmeldung oder Zustimmung.
+    case apple
+    /// Die App kann grundsätzlich nicht laufen; es gibt nichts fortzusetzen und nichts zu beheben.
+    case unsupported
+    case other
+
+    /// Kann „Fortsetzen“ etwas ändern? Bei einer App, die grundsätzlich nicht laufen kann (2D-App, 32-Bit, keine
+    /// native App), nicht – dann bietet weder die Oberfläche noch die Kommandozeile es an.
+    public var resumable: Bool { self != .unsupported }
+
+    /// Was die Kommandozeile sagt, wenn ein Auftrag an `error` angehalten ist: der Fehler und, wo es etwas bringt,
+    /// wie es weitergeht.
+    public static func stopNotice(_ error: Error, job: String) -> String {
+        guard of(error).resumable else {
+            return L("\(error)\nJob \(job) stopped. There is nothing to resume.",
+                     "\(error)\nAuftrag \(job) angehalten. Hier gibt es nichts fortzusetzen.")
+        }
+        return L("\(error)\nJob \(job) stopped. Resume it with: avpplay job resume \(job)",
+                 "\(error)\nAuftrag \(job) angehalten. Fortsetzen mit: avpplay job resume \(job)")
+    }
+
+    public static func of(_ error: Error) -> FailureKind {
+        switch error {
+        case is ProfileProvisioning.Required: return .apple
+        case let e as InstallError:
+            switch e {
+            case .appRunning: return .gameRunning
+            case .notOwned: return .notOwned
+            case .ownershipUnverified: return .signIn
+            case .userFilesNeeded, .missingTrees: return .ownFiles
+            case .missingFiles: return .download
+            case .teamMissing: return .setup
+            case .freeTeamFull: return .apple
+            case .appNotInstalled: return .build
+            case .badIcon: return .other
+            case .notANativeApp, .wrongArchitecture, .notAVRGame: return .unsupported
+            case .steamAccountMissing: return .signIn
+            // Erst vom Gerät entfernen: ein Handgriff dort, wie bei einer App, die gerade läuft.
+            case .otherSourceInstalled: return .device
+            }
+        case let e as SteamError:
+            switch e {
+            case .notSignedIn, .badAccountName: return .signIn
+            case .notOwned: return .notOwned
+            case .toolMissing, .needsRosetta, .wrongSigner, .toolDownloadFailed: return .setup
+            default: return .download
+            }
+        case let e as MetaError:
+            if case .tokenRejected = e { return .signIn }
+            return .download
+        case is TokenError: return .signIn
+        case is DeviceError: return .device
+        case let e as ToolchainError:
+            switch e {
+            case .buildFailed: return .build
+            case .syncFailed, .pipelineListFailed: return .copy
+            case .installFailed: return .device
+            case .refused(let refusal, _, _):
+                switch refusal {
+                case .deviceLocked, .deviceFull: return .device
+                default: return .apple
+                }
+            case .notAToolchain, .tooOld, .signingBlocked: return .setup
+            }
+        case is FetchError, is URLError, is ToolDownloadError: return .download
+        default: return .other
+        }
+    }
+}

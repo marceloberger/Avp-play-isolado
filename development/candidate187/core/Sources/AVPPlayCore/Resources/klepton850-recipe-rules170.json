@@ -1,0 +1,10 @@
+{
+  "version": "850-cc2856c",
+  "sourceSHA256": "ada4454beb528d8a612969c91d85ecf74055994eebd6477c0a874940de1b308c",
+  "genericOBB": {
+    "x3635172946605196": "Android/obb/com.brink.vr.oculus.quest",
+    "x2544573735586536": "Android/obb/com.JustAddWater.SniperEliteVR",
+    "x9531494193591052": "Android/obb/com.FireproofStudios.GhostTown",
+    "x5437449896288644": "Android/obb/com.ProYuga.iBC"
+  }
+}

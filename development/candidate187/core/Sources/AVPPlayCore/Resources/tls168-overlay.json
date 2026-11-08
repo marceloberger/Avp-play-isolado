@@ -1,0 +1,29 @@
+{
+  "revision": "824-a61188d-tls168",
+  "files": [
+    {
+      "path": "runtime/kl_x18.c",
+      "resource": "tls168-kl_x18.c.txt",
+      "originalSHA256": "a33459d277052c3ced3c06a8364af5d8b7093e96e054e2ca16f0e15e2126715f",
+      "correctedSHA256": "6631ebcdaf652af4887f15486364af73d5239476cf0beca7c3c21b6374c94595"
+    },
+    {
+      "path": "runtime/kl_x18.h",
+      "resource": "tls168-kl_x18.h.txt",
+      "originalSHA256": "a19eba0df156388b820c0be0a79044782577a448ecad7e88b2270e0305f48569",
+      "correctedSHA256": "492863f69e517716d0f2474de7c7c862e1379ff82d8f6c5ada3b496c48a1c593"
+    },
+    {
+      "path": "runtime/kl_image.c",
+      "resource": "tls168-kl_image.c.txt",
+      "originalSHA256": "16eb21df685de92b40ec60678f52009dc9f512a51f0b67fec63a8e384312867d",
+      "correctedSHA256": "95dde3effa676c0be733b1e995c8175e3289411303bd13084921ebd14f5b3ac7"
+    },
+    {
+      "path": "tools/klepton_ld.c",
+      "resource": "tls168-klepton_ld.c.txt",
+      "originalSHA256": "45f814624d7dd1be1a31b08b42e2b8ff76a664cce26ff9f76f634690f31a20c0",
+      "correctedSHA256": "6ce865d400e812cb09c6422b39ad84bf47411f06494c955fdd8f52de3243be63"
+    }
+  ]
+}

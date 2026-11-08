@@ -1,0 +1,358 @@
+{
+  "schema": 1,
+  "id": "local-7527722310622065",
+  "title": "Cave Crave (local experimental)",
+  "package": "com.rrrgames.CaveCrave",
+  "versionName": "1.1.4",
+  "versionCode": 739,
+  "store": {},
+  "toolchain": {
+    "target": "x7527722310622065",
+    "minCommit": "a61188d"
+  },
+  "files": [
+    {
+      "name": "739.apk",
+      "id": "local-apk",
+      "role": "apk",
+      "required": true,
+      "dest": "",
+      "localName": "x7527722310622065.apk",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "main.739.com.rrrgames.CaveCrave.obb",
+      "id": "28805992249035096",
+      "role": "main-obb",
+      "size": 3961978927,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "catalog_1.1.4.hash",
+      "id": "28805967039037617",
+      "role": "content-bundle",
+      "size": 32,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_cave_bell_01_assets_all_ef74c3912bf89fc25061bcdbfe6428c9.bundle",
+      "id": "28805966842370970",
+      "role": "content-bundle",
+      "size": 49708472,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "catalog_1.1.4.bin",
+      "id": "28805966819037639",
+      "role": "content-bundle",
+      "size": 140057,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "a3c4dde81e54b7ec30f36dee69b7a839_monoscripts_b2630bab4bfde8fbc422c906a3b3fc56.bundle",
+      "id": "28805966779037643",
+      "role": "content-bundle",
+      "size": 1590,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_cave_tutorial_v2_assets_all_926d6b2f1cbf90e296ec518a18f4eac6.bundle",
+      "id": "28805966739037647",
+      "role": "content-bundle",
+      "size": 258187251,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_red_chamber_assets_all_b4172406c4e3cdce8e656b8ccddde82b.bundle",
+      "id": "28805966705704317",
+      "role": "content-bundle",
+      "size": 18579898,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "pf_28_01_assets_all_c046512470044c54ddd4a78f1d918136.bundle",
+      "id": "28805966679037653",
+      "role": "content-bundle",
+      "size": 189866,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "pathfinding_assets_all_d22294bfca29f5229025bd509f3ab315.bundle",
+      "id": "28805966649037656",
+      "role": "content-bundle",
+      "size": 7207047,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_cave_spiders_small_assets_all_5bd398802f11b0b08f6e6b36029241d8.bundle",
+      "id": "28805966582370996",
+      "role": "content-bundle",
+      "size": 286725949,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_cave_climbing_v3_assets_all_51b35feb758be3e0fb1758e52a54c341.bundle",
+      "id": "28805966282371026",
+      "role": "content-bundle",
+      "size": 286846006,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_nuttyputty_part3_assets_all_2c8aae030a7543db5d238d37be682991.bundle",
+      "id": "28805965049037816",
+      "role": "content-bundle",
+      "size": 342498569,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_cave_tutorial_v1_assets_all_bac0b091a8ca940e9bc4be9d3c0321c0.bundle",
+      "id": "28805965015704486",
+      "role": "content-bundle",
+      "size": 388986681,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_nuttyputty_part2_assets_all_55401cde0ebdecfc6175ae4ab71d2acc.bundle",
+      "id": "28805963442371310",
+      "role": "content-bundle",
+      "size": 402780721,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_nuttyputty_part1_assets_all_9411c1555b5b3b31cb4b27f4b3dbfe29.bundle",
+      "id": "28805962865704701",
+      "role": "content-bundle",
+      "size": 441316796,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_abyss_assets_all_ad784357ca02cd14c571f8d49d7a202d.bundle",
+      "id": "28805961505704837",
+      "role": "content-bundle",
+      "size": 455986548,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_mainmenu_assets_all_59a68cf276968e324e3d492d6244579c.bundle",
+      "id": "28805960419038279",
+      "role": "content-bundle",
+      "size": 460064660,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_20_01_assets_all_ceec349e04810b59a572908616711b54.bundle",
+      "id": "28805959859038335",
+      "role": "content-bundle",
+      "size": 655381735,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_07_02_assets_all_7365f47a0fe0399aba49ac2d6826641d.bundle",
+      "id": "28805958169038504",
+      "role": "content-bundle",
+      "size": 886486528,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_cave_sliding_v7_assets_all_92cc85c15c7309c1782615275de17d6f.bundle",
+      "id": "28805956335705354",
+      "role": "content-bundle",
+      "size": 900334192,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    },
+    {
+      "name": "scenematerials_13_03_assets_all_61d9fb01077a67cc75ecf3bca35094b5.bundle",
+      "id": "28805954465705541",
+      "role": "content-bundle",
+      "size": 994241261,
+      "required": true,
+      "dest": "android-files/Android/obb/com.rrrgames.CaveCrave",
+      "source": {
+        "kind": "user",
+        "hint": {
+          "en": "Provide the files from your legally owned local copy. No Meta download is configured.",
+          "de": "Dateien aus der eigenen rechtm\u00e4\u00dfigen lokalen Kopie bereitstellen. Kein Meta-Download eingerichtet."
+        }
+      }
+    }
+  ],
+  "icon": {
+    "metaAppId": "7527722310622065"
+  },
+  "status": {
+    "playability": "untested",
+    "download": "local",
+    "notes": [
+      {
+        "en": "Experimental local-only recipe for Cave Crave 1.1.4 / 739. Target and Android OBB directory are present in the verified 824. External inventory/sizes: official public catalog snapshot 2026-10-30. APK and all 21 external files must be supplied locally; the main OBB is conservatively required. No official hashes available: import records and later revalidates your file hashes, without declaring them official. No physical test by this fork. External asset-service behavior remains unconfirmed; no synthetic purchase or asset receipt is generated. The 824 minimum selects the audited package; it does not establish that 750 cannot run this game.",
+        "de": "Experimentelles lokales Rezept f\u00fcr Cave Crave 1.1.4 / 739. APK und alle 21 Zusatzdateien selbst bereitstellen. Keine offiziellen Pr\u00fcfsummen und kein eigener Hardwaretest; keine Spielbarkeitszusage."
+      }
+    ]
+  }
+}

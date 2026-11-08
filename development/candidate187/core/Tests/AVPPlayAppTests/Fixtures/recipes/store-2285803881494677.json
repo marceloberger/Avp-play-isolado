@@ -1,0 +1,50 @@
+{
+ "schema": 1,
+ "id": "store-2285803881494677",
+ "title": "Gun Club VR",
+ "package": "com.nextgenreality.GunClubVR",
+ "versionName": "2.3.105.052",
+ "versionCode": 410,
+ "store": {
+  "appId": "2285803881494677"
+ },
+ "toolchain": {
+  "target": "x2285803881494677",
+  "minCommit": "9f12962f71764452fddc25e030ed018d2d86c794"
+ },
+ "files": [
+  {
+   "name": "GCVR_2_3_105_052.apk",
+   "role": "apk",
+   "id": "27743586188623096",
+   "size": 41223155,
+   "sha256": "aa8a8f50a7ce33fd032efc5d4c72f63614fd5296238a8af6b357f42ad7271c26",
+   "required": true,
+   "dest": "",
+   "localName": "x2285803881494677.apk"
+  },
+  {
+   "name": "main.410.com.nextgenreality.GunClubVR.obb",
+   "role": "main-obb",
+   "id": "27743584811956567",
+   "size": 3972735119,
+   "sha256": "8a17c840fccf1441dd4e41ee33633104c49e2e2afdfcf655635ca916df49cb04",
+   "required": true,
+   "dest": "@obb"
+  }
+ ],
+ "status": {
+    "playability": "verified",
+    "download": "listed",
+    "notes": [
+      {
+        "en": "Marked as verified by the project on 2026-10-16. File list as Meta's tool reports it for this build; 2 of 2 checksums recorded from a download.",
+        "de": "Vom Projekt am 2026-10-16 als geprüft markiert. Dateiliste, wie Metas Werkzeug sie für diesen Build nennt; 2 von 2 Prüfsummen aus einem Download erfasst."
+      },
+      {
+        "en": "Gun Club VR. Tested by the author on a Vision Pro M5 with toolchain 561: drawn at up to 4000 pixels per eye, with a steady frame rate. Builds on community fix 44 (stable head movement, gun materials, Exit that saves settings, Sense grip). Needs toolchain 9f12962 or newer.",
+        "de": "Gun Club VR. Vom Autor auf einer Vision Pro M5 mit Toolchain 561 getestet: bis zu 4000 Pixel je Auge, mit gleichmäßiger Bildrate. Baut auf Community-Fix 44 auf (ruhige Kopfbewegung, Waffenmaterialien, Exit speichert Einstellungen, Sense-Griff). Braucht Toolchain 9f12962 oder neuer."
+      }
+    ]
+  }
+}
